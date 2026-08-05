@@ -1,0 +1,228 @@
+{
+  "name": "LearnFlow - Weekly analytics summary",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "every-monday-0800",
+      "name": "Every Monday 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.LEARNFLOW_API_URL }}/api/v1/analytics/overview",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LEARNFLOW_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "fetch-overview",
+      "name": "Fetch overview",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.LEARNFLOW_API_URL }}/api/v1/analytics/usage?days=7",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LEARNFLOW_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "fetch-ai-usage",
+      "name": "Fetch AI usage",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -80,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.LEARNFLOW_API_URL }}/api/v1/analytics/workflows",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LEARNFLOW_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "fetch-workflow-stats",
+      "name": "Fetch workflow stats",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -80,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const overview = $('Fetch overview').first().json;\nconst usage = $('Fetch AI usage').first().json;\nconst flows = $('Fetch workflow stats').first().json;\nconst failing = flows.filter(f => f.total > 0 && f.success_rate < 0.9);\nconst lines = [\n  `Learners: ${overview.total_learners} (${overview.active_learners} active)`,\n  `Completion rate: ${(overview.course_completion_rate * 100).toFixed(1)}%`,\n  `Open tickets: ${overview.open_support_tickets}`,\n  `AI spend (7d): $${usage.total_cost_usd.toFixed(4)} over ${usage.total_requests} calls`,\n  `Workflow success: ${(overview.workflow_success_rate * 100).toFixed(1)}%`,\n  failing.length\n    ? `Needs attention: ${failing.map(f => f.name).join(', ')}`\n    : 'All workflows healthy',\n];\nreturn [{ json: { digest: lines.join('\\n') } }];"
+      },
+      "id": "compose-digest",
+      "name": "Compose digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.LEARNFLOW_EMAIL_FROM }}",
+        "toEmail": "={{ $env.LEARNFLOW_ADMIN_EMAIL }}",
+        "subject": "LearnFlow weekly summary",
+        "text": "={{ $json.digest }}",
+        "options": {}
+      },
+      "id": "email-digest",
+      "name": "Email digest",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        360,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Every Monday 08:00": {
+      "main": [
+        [
+          {
+            "node": "Fetch overview",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch overview": {
+      "main": [
+        [
+          {
+            "node": "Fetch AI usage",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch workflow stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch AI usage": {
+      "main": [
+        [
+          {
+            "node": "Compose digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch workflow stats": {
+      "main": [
+        [
+          {
+            "node": "Compose digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose digest": {
+      "main": [
+        [
+          {
+            "node": "Email digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    "learnflow",
+    "analytics"
+  ],
+  "pinData": {},
+  "versionId": "1",
+  "meta": {
+    "instanceId": "learnflow"
+  }
+}

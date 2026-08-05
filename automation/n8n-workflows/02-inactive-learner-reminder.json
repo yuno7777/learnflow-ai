@@ -1,0 +1,266 @@
+{
+  "name": "LearnFlow - Inactive learner reminders",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * *"
+            }
+          ]
+        }
+      },
+      "id": "every-day-at-0700",
+      "name": "Every day at 07:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.LEARNFLOW_API_URL }}/api/v1/analytics/inactive-learners?threshold_days={{ $env.LEARNFLOW_INACTIVITY_DAYS || 14 }}&max_reminders=3",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LEARNFLOW_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "fetch-inactive-learners",
+      "name": "Fetch inactive learners",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.first().json.learners.map(l => ({ json: l }));"
+      },
+      "id": "split-learners",
+      "name": "Split learners",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -80,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.reminders_sent }}",
+              "rightValue": 3,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "under-reminder-limit",
+      "name": "Under reminder limit?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LEARNFLOW_API_URL }}/api/v1/assistant/ask",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LEARNFLOW_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          },
+          "timeout": 30000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ question: 'Write a short supportive nudge for ' + $json.full_name + ' who has been inactive for ' + $json.days_inactive + ' days on ' + ($json.course_title || 'their course') + '.', learner_id: $json.id }) }}"
+      },
+      "id": "draft-reminder",
+      "name": "Draft reminder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        360,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.LEARNFLOW_EMAIL_FROM }}",
+        "toEmail": "={{ $('Split learners').item.json.email }}",
+        "subject": "Pick up where you left off",
+        "text": "={{ $json.answer }}",
+        "options": {}
+      },
+      "id": "send-reminder",
+      "name": "Send reminder",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        580,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LEARNFLOW_API_URL }}/api/v1/tickets",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LEARNFLOW_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          },
+          "timeout": 30000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ subject: 'Escalation: ' + $json.full_name + ' unresponsive', body: 'Learner reached the reminder limit without re-engaging.', learner_id: $json.id, triage: false }) }}"
+      },
+      "id": "escalate-open-ticket",
+      "name": "Escalate: open ticket",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        580,
+        420
+      ]
+    }
+  ],
+  "connections": {
+    "Every day at 07:00": {
+      "main": [
+        [
+          {
+            "node": "Fetch inactive learners",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch inactive learners": {
+      "main": [
+        [
+          {
+            "node": "Split learners",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split learners": {
+      "main": [
+        [
+          {
+            "node": "Under reminder limit?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Under reminder limit?": {
+      "main": [
+        [
+          {
+            "node": "Draft reminder",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Escalate: open ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft reminder": {
+      "main": [
+        [
+          {
+            "node": "Send reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    "learnflow",
+    "engagement"
+  ],
+  "pinData": {},
+  "versionId": "1",
+  "meta": {
+    "instanceId": "learnflow"
+  }
+}

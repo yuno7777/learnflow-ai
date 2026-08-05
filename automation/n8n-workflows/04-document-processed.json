@@ -1,0 +1,349 @@
+{
+  "name": "LearnFlow - Document processing notification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "learnflow/document-processed",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "webhook-document-indexed",
+      "name": "Webhook: document indexed",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verify the LearnFlow HMAC signature over the RAW request body.\n// Header form: t=<unix>,v1=<hex>;  mac = HMAC_SHA256(secret, `${t}.${rawBody}`)\nconst crypto = require('crypto');\nconst item = $input.first().json;\nconst header = (item.headers || {})['x-learnflow-signature'] || '';\nconst raw = item.rawBody !== undefined ? item.rawBody : JSON.stringify(item.body);\nconst parts = Object.fromEntries(header.split(',').map(p => p.split('=')));\nconst expected = crypto\n  .createHmac('sha256', $env.LEARNFLOW_WEBHOOK_SECRET)\n  .update(`${parts.t}.${raw}`)\n  .digest('hex');\nconst fresh = Math.abs(Date.now() / 1000 - Number(parts.t)) < 300;\nif (!fresh) { throw new Error('LearnFlow signature outside tolerance window'); }\nif (!parts.v1 || expected.length !== parts.v1.length ||\n    !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(parts.v1))) {\n  throw new Error('Invalid LearnFlow signature');\n}\nreturn [{ json: item.body }];"
+      },
+      "id": "verify-signature",
+      "name": "Verify signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.LEARNFLOW_API_URL }}/api/v1/documents/{{ $json.data.document_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LEARNFLOW_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "fetch-document",
+      "name": "Fetch document",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -80,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "indexed",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "indexed",
+      "name": "Indexed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.LEARNFLOW_EMAIL_FROM }}",
+        "toEmail": "={{ $env.LEARNFLOW_ADMIN_EMAIL }}",
+        "subject": "=Document indexed: {{ $json.filename }}",
+        "text": "={{ $json.filename }} finished indexing: {{ $json.word_count }} words across {{ $json.page_count }} pages.",
+        "options": {}
+      },
+      "id": "notify-admins",
+      "name": "Notify admins",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        360,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LEARNFLOW_API_URL }}/api/v1/documents/{{ $json.id }}/reindex",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LEARNFLOW_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "retry-ingestion",
+      "name": "Retry ingestion",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        360,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: {\n  execution_id: $('Verify signature').first().json.execution_id,\n  status: 'succeeded',\n  n8n_execution_id: String($execution.id),\n  output: {\"notified\": true},\n  steps: [{\"name\": \"n8n:notify_admins\", \"kind\": \"email\", \"status\": \"succeeded\"}]\n} }];"
+      },
+      "id": "build-callback",
+      "name": "Build callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sign the callback body so FastAPI can verify this came from n8n.\nconst crypto = require('crypto');\nconst body = JSON.stringify($input.first().json);\nconst t = Math.floor(Date.now() / 1000);\nconst mac = crypto.createHmac('sha256', $env.LEARNFLOW_WEBHOOK_SECRET)\n  .update(`${t}.${body}`).digest('hex');\nreturn [{ json: { body, signature: `t=${t},v1=${mac}` } }];"
+      },
+      "id": "sign-callback",
+      "name": "Sign callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.callback_url || $env.LEARNFLOW_API_URL + '/api/v1/webhooks/n8n/callback' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-LearnFlow-Signature",
+              "value": "={{ $json.signature }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          },
+          "timeout": 30000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}"
+      },
+      "id": "post-callback",
+      "name": "POST callback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1020,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ executionId: $execution.id, accepted: true }) }}"
+      },
+      "id": "respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1240,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook: document indexed": {
+      "main": [
+        [
+          {
+            "node": "Verify signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify signature": {
+      "main": [
+        [
+          {
+            "node": "Fetch document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch document": {
+      "main": [
+        [
+          {
+            "node": "Indexed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Indexed?": {
+      "main": [
+        [
+          {
+            "node": "Notify admins",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Retry ingestion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify admins": {
+      "main": [
+        [
+          {
+            "node": "Build callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Retry ingestion": {
+      "main": [
+        [
+          {
+            "node": "Build callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build callback": {
+      "main": [
+        [
+          {
+            "node": "Sign callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign callback": {
+      "main": [
+        [
+          {
+            "node": "POST callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST callback": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    "learnflow",
+    "ingestion"
+  ],
+  "pinData": {},
+  "versionId": "1",
+  "meta": {
+    "instanceId": "learnflow"
+  }
+}

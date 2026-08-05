@@ -1,0 +1,346 @@
+{
+  "name": "LearnFlow - Learner onboarding",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "learnflow/learner-onboarding",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "id": "webhook-learner-created",
+      "name": "Webhook: learner created",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -520,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Verify the LearnFlow HMAC signature over the RAW request body.\n// Header form: t=<unix>,v1=<hex>;  mac = HMAC_SHA256(secret, `${t}.${rawBody}`)\nconst crypto = require('crypto');\nconst item = $input.first().json;\nconst header = (item.headers || {})['x-learnflow-signature'] || '';\nconst raw = item.rawBody !== undefined ? item.rawBody : JSON.stringify(item.body);\nconst parts = Object.fromEntries(header.split(',').map(p => p.split('=')));\nconst expected = crypto\n  .createHmac('sha256', $env.LEARNFLOW_WEBHOOK_SECRET)\n  .update(`${parts.t}.${raw}`)\n  .digest('hex');\nconst fresh = Math.abs(Date.now() / 1000 - Number(parts.t)) < 300;\nif (!fresh) { throw new Error('LearnFlow signature outside tolerance window'); }\nif (!parts.v1 || expected.length !== parts.v1.length ||\n    !crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(parts.v1))) {\n  throw new Error('Invalid LearnFlow signature');\n}\nreturn [{ json: item.body }];"
+      },
+      "id": "verify-signature",
+      "name": "Verify signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.LEARNFLOW_API_URL }}/api/v1/learners/{{ $json.data.learner_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LEARNFLOW_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "fetch-learner",
+      "name": "Fetch learner",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -80,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LEARNFLOW_API_URL }}/api/v1/assistant/ask",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LEARNFLOW_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          },
+          "timeout": 30000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ question: 'Write a two paragraph welcome message for ' + $json.full_name + ' who is starting their first course.', learner_id: $json.id }) }}"
+      },
+      "id": "generate-welcome-message",
+      "name": "Generate welcome message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        140,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.LEARNFLOW_EMAIL_FROM }}",
+        "toEmail": "={{ $('Fetch learner').item.json.email }}",
+        "subject": "Welcome to your training programme",
+        "text": "={{ $json.answer }}",
+        "options": {}
+      },
+      "id": "send-welcome-email",
+      "name": "Send welcome email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        360,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LEARNFLOW_API_URL }}/api/v1/learners/{{ $('Fetch learner').item.json.id }}/activity",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-API-Key",
+              "value": "={{ $env.LEARNFLOW_API_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "record-activity",
+      "name": "Record activity",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        580,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: {\n  execution_id: $('Verify signature').first().json.execution_id,\n  status: 'succeeded',\n  n8n_execution_id: String($execution.id),\n  output: {\"welcome_sent\": true},\n  steps: [{\"name\": \"n8n:fetch_learner\", \"kind\": \"http\", \"status\": \"succeeded\"}, {\"name\": \"n8n:generate_welcome\", \"kind\": \"ai\", \"status\": \"succeeded\"}, {\"name\": \"n8n:send_welcome_email\", \"kind\": \"email\", \"status\": \"succeeded\"}]\n} }];"
+      },
+      "id": "build-callback",
+      "name": "Build callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sign the callback body so FastAPI can verify this came from n8n.\nconst crypto = require('crypto');\nconst body = JSON.stringify($input.first().json);\nconst t = Math.floor(Date.now() / 1000);\nconst mac = crypto.createHmac('sha256', $env.LEARNFLOW_WEBHOOK_SECRET)\n  .update(`${t}.${body}`).digest('hex');\nreturn [{ json: { body, signature: `t=${t},v1=${mac}` } }];"
+      },
+      "id": "sign-callback",
+      "name": "Sign callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1020,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.callback_url || $env.LEARNFLOW_API_URL + '/api/v1/webhooks/n8n/callback' }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-LearnFlow-Signature",
+              "value": "={{ $json.signature }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "neverError": false
+            }
+          },
+          "timeout": 30000
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.body }}"
+      },
+      "id": "post-callback",
+      "name": "POST callback",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1240,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ executionId: $execution.id, accepted: true }) }}"
+      },
+      "id": "respond",
+      "name": "Respond",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1460,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook: learner created": {
+      "main": [
+        [
+          {
+            "node": "Verify signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify signature": {
+      "main": [
+        [
+          {
+            "node": "Fetch learner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch learner": {
+      "main": [
+        [
+          {
+            "node": "Generate welcome message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate welcome message": {
+      "main": [
+        [
+          {
+            "node": "Send welcome email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send welcome email": {
+      "main": [
+        [
+          {
+            "node": "Record activity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record activity": {
+      "main": [
+        [
+          {
+            "node": "Build callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build callback": {
+      "main": [
+        [
+          {
+            "node": "Sign callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign callback": {
+      "main": [
+        [
+          {
+            "node": "POST callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "POST callback": {
+      "main": [
+        [
+          {
+            "node": "Respond",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    "learnflow",
+    "onboarding"
+  ],
+  "pinData": {},
+  "versionId": "1",
+  "meta": {
+    "instanceId": "learnflow"
+  }
+}
