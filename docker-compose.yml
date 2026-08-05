@@ -1,0 +1,197 @@
+# LearnFlow AI — the whole platform in one command:
+#   cp .env.example .env && docker compose up --build
+#
+# Services: postgres, redis, chromadb, api, worker, web, n8n (+ optional ollama profile).
+# Dependency ordering is enforced with real health checks, not sleeps.
+
+name: learnflow
+
+x-api-env: &api-env
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-learnflow}:${POSTGRES_PASSWORD:-learnflow}@postgres:5432/${POSTGRES_DB:-learnflow}
+  REDIS_URL: redis://redis:6379/0
+  CHROMA_HOST: chromadb
+  CHROMA_PORT: 8000
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+  WEBHOOK_SIGNING_SECRET: ${WEBHOOK_SIGNING_SECRET:?set WEBHOOK_SIGNING_SECRET in .env}
+  LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+  LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+  LLM_FALLBACK_PROVIDER: ${LLM_FALLBACK_PROVIDER:-}
+  EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-mock}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  OLLAMA_BASE_URL: http://ollama:11434
+  N8N_BASE_URL: http://n8n:5678
+  N8N_API_KEY: ${N8N_API_KEY:-}
+  PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-http://api:8000}
+  UPLOAD_DIR: /data/uploads
+  CORS_ORIGINS: '["http://localhost:3000"]'
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USER: ${SMTP_USER:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  EMAIL_FROM: ${EMAIL_FROM:-no-reply@learnflow.local}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-learnflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-learnflow}
+      POSTGRES_DB: ${POSTGRES_DB:-learnflow}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-learnflow} -d ${POSTGRES_DB:-learnflow}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+
+  chromadb:
+    image: chromadb/chroma:0.5.20
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+    volumes:
+      - chroma-data:/chroma/chroma
+    ports:
+      - "${CHROMA_PORT:-8001}:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/api/v1/heartbeat || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  migrate:
+    build:
+      context: ./apps/api
+      target: base
+    environment: *api-env
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ./apps/api
+      target: base
+    environment: *api-env
+    volumes:
+      - uploads:/data/uploads
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./apps/api
+      target: worker
+    environment: *api-env
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    environment:
+      NODE_ENV: production
+      API_URL: http://api:8000
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  n8n:
+    image: n8nio/n8n:1.70.1
+    environment:
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5678/}
+      GENERIC_TIMEZONE: ${TZ:-UTC}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_RUNNERS_ENABLED: "true"
+      # Consumed by the Code nodes in automation/n8n-workflows/*.json
+      LEARNFLOW_API_URL: http://api:8000
+      LEARNFLOW_API_KEY: ${LEARNFLOW_API_KEY:-}
+      LEARNFLOW_WEBHOOK_SECRET: ${WEBHOOK_SIGNING_SECRET}
+      LEARNFLOW_ADMIN_EMAIL: ${LEARNFLOW_ADMIN_EMAIL:-admin@learnflow.dev}
+      LEARNFLOW_EMAIL_FROM: ${EMAIL_FROM:-no-reply@learnflow.local}
+      LEARNFLOW_INACTIVITY_DAYS: ${LEARNFLOW_INACTIVITY_DAYS:-14}
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./automation/n8n-workflows:/workflows:ro
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5678/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # Optional local models: `docker compose --profile ollama up`
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:
+  chroma-data:
+  n8n-data:
+  ollama-data:
+  uploads:
