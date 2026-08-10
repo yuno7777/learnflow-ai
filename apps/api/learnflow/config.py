@@ -15,7 +15,11 @@ class Settings(BaseSettings):
 
     # --- datastores ---
     database_url: str = "postgresql+asyncpg://learnflow:learnflow@localhost:5432/learnflow"
+    # Empty selects single-node mode: no rate limiting, no live streaming,
+    # and the job queue falls back to the database.
     redis_url: str = "redis://localhost:6379/0"
+    # "arq" uses Redis; "database" polls the jobs table from a standalone worker.
+    job_queue: str = "arq"
     chroma_host: str = "localhost"
     chroma_port: int = 8001
     # When set, Chroma runs embedded on disk instead of over HTTP (used by tests/CLI).
