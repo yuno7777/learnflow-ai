@@ -1,11 +1,12 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import * as React from "react";
 
-import { Badge, Button, Skeleton, cn } from "@/components/ui";
+import { ThemeToggle } from "@/components/theme";
+import { Badge, Button, Select, Skeleton, cn } from "@/components/ui";
 import { ApiError, api, tokens } from "@/lib/api";
 import type { Me } from "@/lib/types";
 
@@ -24,6 +25,7 @@ export const NAV: Array<{ group: string; items: Array<{ href: string; label: str
       { href: "/dashboard/knowledge-bases", label: "Knowledge bases" },
       { href: "/dashboard/documents", label: "Documents" },
       { href: "/dashboard/assistant", label: "AI assistant" },
+      { href: "/dashboard/content", label: "Content studio" },
     ],
   },
   {
@@ -33,6 +35,7 @@ export const NAV: Array<{ group: string; items: Array<{ href: string; label: str
       { href: "/dashboard/assessments", label: "Assessments" },
       { href: "/dashboard/reviews", label: "Evaluation review" },
       { href: "/dashboard/learners", label: "Learners" },
+      { href: "/dashboard/learner-assistant", label: "Learner assistant" },
     ],
   },
   {
@@ -50,6 +53,7 @@ export const NAV: Array<{ group: string; items: Array<{ href: string; label: str
       { href: "/dashboard/integrations", label: "Integrations" },
       { href: "/dashboard/api-keys", label: "API keys" },
       { href: "/dashboard/audit", label: "Audit log" },
+      { href: "/dashboard/workspaces", label: "Workspaces" },
       { href: "/dashboard/settings", label: "Organization" },
     ],
   },
@@ -67,7 +71,20 @@ export function useMe() {
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { data: me, isLoading, error } = useMe();
+  // Surfaced in the sidebar: a review backlog is the one thing in this product that
+  // actively blocks a learner from getting their result.
+  const reviewQueue = useQuery({
+    queryKey: ["analytics", "evaluations"],
+    queryFn: () =>
+      api.get<{ needs_review: number }>("/api/v1/analytics/evaluations"),
+    refetchInterval: 60_000,
+    retry: false,
+  });
+  const badges: Record<string, number> = {
+    "/dashboard/reviews": reviewQueue.data?.needs_review ?? 0,
+  };
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [mobileOpen, setMobileOpen] = React.useState(false);
 
@@ -134,7 +151,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
                             : "text-muted-foreground hover:bg-muted hover:text-foreground",
                         )}
                       >
-                        {item.label}
+                        <span className="flex items-center justify-between gap-2">
+                          {item.label}
+                          {badges[item.href] > 0 && (
+                            <Badge tone="warning">{badges[item.href]}</Badge>
+                          )}
+                        </span>
                       </Link>
                     </li>
                   );
@@ -168,6 +190,30 @@ export function Shell({ children }: { children: React.ReactNode }) {
               <Skeleton className="h-4 w-32" />
             ) : me ? (
               <>
+                {me.memberships.length > 1 ? (
+                  <Select
+                    aria-label="Active organization"
+                    className="h-8 max-w-[190px] text-xs"
+                    value={me.organization_id}
+                    onChange={(event) => {
+                      // The API resolves the tenant from this header and re-checks
+                      // membership, so switching is a client-side header change only.
+                      tokens.setOrganization(event.target.value);
+                      void queryClient.invalidateQueries();
+                      router.refresh();
+                    }}
+                  >
+                    {me.memberships.map((m) => (
+                      <option key={m.organization_id} value={m.organization_id}>
+                        {m.organization_name}
+                      </option>
+                    ))}
+                  </Select>
+                ) : (
+                  <span className="hidden text-xs font-medium md:block">
+                    {me.memberships[0]?.organization_name}
+                  </span>
+                )}
                 <div className="hidden text-right sm:block">
                   <p className="text-xs font-medium leading-tight">{me.user.full_name}</p>
                   <p className="text-2xs leading-tight text-muted-foreground">{me.user.email}</p>
@@ -175,6 +221,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
                 <Badge tone="info">{me.role.replace(/_/g, " ")}</Badge>
               </>
             ) : null}
+            <ThemeToggle />
             <Button variant="secondary" size="sm" onClick={signOut}>
               Sign out
             </Button>
