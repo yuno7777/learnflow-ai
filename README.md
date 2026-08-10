@@ -44,11 +44,16 @@ docker compose exec api python -m learnflow.seed
 **Demo credentials (local development only — created by the seed command):**
 
 ```
-admin@learnflow.dev        / LearnFlow!2026   (organization admin)
-instructor1@learnflow.dev  / LearnFlow!2026   (instructor)
-reviewer@learnflow.dev     / LearnFlow!2026   (reviewer)
-support@learnflow.dev      / LearnFlow!2026   (support agent)
+admin@learnflow.dev         / LearnFlow!2026   organization admin  -> /dashboard
+instructor1@learnflow.dev   / LearnFlow!2026   instructor          -> /dashboard
+reviewer@learnflow.dev      / LearnFlow!2026   reviewer            -> /dashboard
+support@learnflow.dev       / LearnFlow!2026   support agent       -> /dashboard
+ana.silva@acme.example.com  / LearnFlow!2026   learner             -> /learn
 ```
+
+Sign in as the learner to see the other side of the product: their own courses, a lesson
+reader that records progress, an assessment to sit, and the feedback once it has been
+marked. Login routes by role — a learner never lands on the admin dashboard.
 
 **No API key is required to start.** `LLM_PROVIDER=mock` runs a deterministic offline
 provider that synthesises schema-valid structured output and hash-based embeddings, so the
@@ -59,7 +64,7 @@ Set `LLM_PROVIDER=openai` and `OPENAI_API_KEY` when you want real models.
 
 ## What is actually implemented
 
-Everything below is exercised by the test suite (49 backend tests, 10 frontend tests).
+Everything below is exercised by the test suite (58 backend tests, 10 frontend tests).
 
 ### Knowledge base and RAG
 - Upload PDF, DOCX, TXT, Markdown, CSV. Files are validated against their **magic bytes**,
@@ -110,6 +115,17 @@ Everything below is exercised by the test suite (49 backend tests, 10 frontend t
 - Full execution detail: steps, retries, input/output payloads, n8n execution id, token cost,
   manual retry, and live status over SSE.
 
+### The learner side
+- Learner records and login accounts are **separate on purpose** — most learners in an LMS are
+  imported from an HRIS and never sign in. An admin grants portal access explicitly, which
+  creates the account and links it to the learner record.
+- A learner login is the only principal that sits *inside* a tenant but must not see all of
+  it. That boundary is enforced server-side: a learner sees exactly one learner (themselves),
+  only published courses they are enrolled in, only their own submissions, and gets a **404 —
+  not a 403** for anyone else's, so ids cannot be probed.
+- Submitting as another learner, marking another learner's progress and asking the assistant
+  about another learner are each refused, and each has a test.
+
 ### Multi-tenancy and security
 - Tenant isolation lives in the **data layer**: the repository refuses to build a query
   against a tenant-scoped model without an organization filter, and stamps the tenant id on
@@ -138,8 +154,10 @@ learnflow-ai/
 │   │   │   ├── services/       repository, jobs, generation, evaluation, audit
 │   │   │   └── worker/         ARQ tasks and cron
 │   │   ├── alembic/            migrations
-│   │   └── tests/              49 backend tests
-│   └── web/                    Next.js 15 dashboard (25 routes)
+│   │   └── tests/              58 backend tests
+│   └── web/                    Next.js 15 frontend
+│       ├── app/dashboard/      staff dashboard
+│       └── app/learn/          learner portal
 ├── automation/n8n-workflows/   5 importable workflow JSON files
 ├── infrastructure/kubernetes/  23 manifests + kustomization
 ├── scripts/                    generators for the manifests and workflows

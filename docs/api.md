@@ -80,7 +80,7 @@ curl -X POST localhost:8000/api/v1/auth/login \
 | POST | `/auth/login` | Identical error for unknown email and wrong password |
 | POST | `/auth/refresh` | **Single use** — the presented token is revoked as it is redeemed |
 | POST | `/auth/logout` | 204 |
-| GET | `/auth/me` | Principal, role and the resolved permission list |
+| GET | `/auth/me` | Principal, role, resolved permissions, and `learner_id` when the login is a learner |
 
 ---
 
@@ -163,6 +163,27 @@ When nothing clears the similarity threshold the response is a refusal with
 | GET | `/content/output-types` | |
 
 ---
+
+### Learner scoping
+
+A principal with the `learner` role is restricted server-side, not by hiding UI:
+
+| Endpoint | What a learner sees |
+|---|---|
+| `GET /learners` | Exactly one row — themselves |
+| `GET /learners/{id}` | 404 for anyone else, identical to a nonexistent id |
+| `POST /learners/{id}/progress` | Their own enrolment only |
+| `GET /courses` | Published courses they are enrolled in |
+| `GET /assessments` | Published assessments only |
+| `GET /assessments/{id}?include_answers=true` | 403 |
+| `GET /submissions` | Their own submissions |
+| `POST /assessments/{id}/submissions` | `learner_id` is forced to themselves |
+| `POST /assistant/ask` | `learner_id` is forced to themselves |
+| analytics, audit, keys, workflows | 403 |
+
+`POST /learners/{id}/access` (needs `learner:manage`) creates or links a user account with
+the learner role and points the learner record at it. Learner records and logins are separate
+until someone does this.
 
 ## Courses and assessments
 

@@ -51,8 +51,9 @@ implemented and tested; everything below is not.
 
 - **The workflow builder is templates, not a canvas.** Seven templates map onto the exported
   n8n workflows. Deliberate — replicating the n8n editor was explicitly out of scope.
-- **No learner-facing portal.** Learners exist as records; submissions are made through the
-  admin UI for demonstration. A separate learner app is the obvious next surface.
+- **The learner portal is deliberately small.** It covers my courses, a lesson reader with
+  progress, sitting an assessment and reading the feedback. There is no certificate download,
+  no discussion, no notifications and no mobile app.
 - **No certificates, SCORM/xAPI, or LTI integration.**
 - **Content transformation returns job results via the jobs API**, without a dedicated UI to
   browse generated flashcards and FAQs.
@@ -62,8 +63,9 @@ implemented and tested; everything below is not.
 
 ## Testing
 
-- 49 backend and 10 frontend tests cover authentication, tenant isolation, ingestion, RAG,
-  generation, validation, evaluation, workflows, webhooks, seeding and analytics.
+- 58 backend and 10 frontend tests cover authentication, tenant isolation, learner
+  self-scoping, ingestion, RAG, generation, validation, evaluation, workflows, webhooks,
+  seeding and analytics.
 - **Playwright tests are opt-in** (`E2E_RUN=1`) because they need a running, seeded stack.
 - **No load testing.** Behaviour under concurrent ingestion of large PDFs is unmeasured.
 - **The vector store is exercised in-memory in tests**, not against real Chroma. The adapter
@@ -77,4 +79,6 @@ implemented and tested; everything below is not.
    scaling of the worker.
 3. **Enforced API key scopes**, so an integration key can be read-only.
 4. **A reranker** in the retrieval path, measured against the harness from (1).
-5. **A learner portal**, which is where the product value actually lands.
+5. **Real model output everywhere.** The platform still defaults to the deterministic mock
+   provider, so generated courses and answers read as word salad until `LLM_PROVIDER` is
+   pointed at OpenAI, Azure or a local Ollama. Nothing else has to change.

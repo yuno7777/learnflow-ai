@@ -135,6 +135,22 @@ rates and durations, and the inactive-learner list the reminder workflow consume
 
 ---
 
+### 16. See it from the learner's side
+
+Sign out and back in as `ana.silva@acme.example.com` / `LearnFlow!2026`.
+
+You land on `/learn`, not the dashboard — login routes by role. From here: their enrolled
+courses with progress, a lesson reader where ticking a lesson writes real progress back
+through the API, an assessment to sit with the answer key stripped out, and Results showing
+the feedback once marking is done.
+
+**Point out:** anything still awaiting human review shows as *awaiting review*, never as a
+score — the learner is never shown a low-confidence machine grade as if it were final.
+
+**Point out:** open dev tools and try `GET /api/v1/learners` with this token. One row comes
+back: themselves. Ask for another learner's id and it is a 404, indistinguishable from an id
+that does not exist.
+
 ## Extra credit
 
 **Fire a workflow from outside**, the way an HRIS would:
