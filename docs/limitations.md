@@ -21,7 +21,8 @@ implemented and tested; everything below is not.
 
 ## AI
 
-- **Cost is estimated, not billed.** Prices come from a static table in `ai/pricing.py`; models
+- **Cost is estimated, not billed.** Seeded demo history is flagged and filterable, but the
+  estimate itself still comes from a static price table. Prices come from a static table in `ai/pricing.py`; models
   not in it fall back to a conservative guess. Reconcile against provider invoices.
 - **No semantic caching.** Identical questions re-embed and re-answer.
 - **No reranker.** Hybrid fusion is reciprocal rank fusion over dense and keyword hits; a
@@ -63,7 +64,7 @@ implemented and tested; everything below is not.
 
 ## Testing
 
-- 58 backend and 10 frontend tests cover authentication, tenant isolation, learner
+- 59 backend and 10 frontend tests cover authentication, tenant isolation, learner
   self-scoping, ingestion, RAG, generation, validation, evaluation, workflows, webhooks,
   seeding and analytics.
 - **Playwright tests are opt-in** (`E2E_RUN=1`) because they need a running, seeded stack.

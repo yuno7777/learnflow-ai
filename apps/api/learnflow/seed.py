@@ -755,6 +755,7 @@ async def seed(reset: bool = False) -> None:
                             retry_count=0 if success else 2,
                             error=None if success else "ProviderUnavailable: 503",
                             created_at=occurred,
+                            is_demo_data=True,
                         )
                     )
                     if success:
@@ -769,6 +770,7 @@ async def seed(reset: bool = False) -> None:
                                 output_tokens=output_tokens,
                                 estimated_cost_usd=cost,
                                 occurred_at=occurred,
+                                is_demo_data=True,
                             )
                         )
 
@@ -781,7 +783,11 @@ def main() -> None:
     args = parser.parse_args()
     configure_logging(json_output=False)
     asyncio.run(seed(reset=args.reset))
-    print(f"\nDemo organization ready.\n  admin@learnflow.dev / {DEMO_PASSWORD}\n")
+    print(
+        "\nDemo organization ready."
+        f"\n  admin    admin@learnflow.dev          / {DEMO_PASSWORD}   -> /dashboard"
+        f"\n  learner  {DEMO_LEARNER_EMAIL} / {DEMO_PASSWORD}   -> /learn\n"
+    )
 
 
 if __name__ == "__main__":

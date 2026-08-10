@@ -392,6 +392,7 @@ export interface Overview {
   average_workflow_duration_ms: number | null;
   rag_retrieval_latency_ms: number | null;
   llm_response_latency_ms: number | null;
+  includes_demo_data: boolean;
 }
 
 export interface TimeseriesPoint {
@@ -406,6 +407,8 @@ export interface Timeseries {
 }
 
 export interface UsageSummary {
+  includes_demo_data: boolean;
+  demo_requests: number;
   total_requests: number;
   total_input_tokens: number;
   total_output_tokens: number;

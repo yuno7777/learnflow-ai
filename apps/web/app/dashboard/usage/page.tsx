@@ -42,10 +42,15 @@ const TOOLTIP = {
 
 export default function UsagePage() {
   const [days, setDays] = React.useState(30);
+  const [excludeDemo, setExcludeDemo] = React.useState(false);
 
   const usage = useQuery({
-    queryKey: ["usage", days],
-    queryFn: () => api.get<UsageSummary>("/api/v1/analytics/usage", { days }),
+    queryKey: ["usage", days, excludeDemo],
+    queryFn: () =>
+      api.get<UsageSummary>("/api/v1/analytics/usage", {
+        days,
+        exclude_demo: excludeDemo || undefined,
+      }),
   });
 
   const data = usage.data;
@@ -67,6 +72,25 @@ export default function UsagePage() {
           </Select>
         }
       />
+
+      {data && (data.includes_demo_data || excludeDemo) && (
+        <div className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-warning/30 bg-warning/5 p-3">
+          <p className="text-xs text-warning">
+            {excludeDemo
+              ? "Showing real model calls only. Seeded demo history is excluded."
+              : `Includes ${number(data.demo_requests)} seeded demo records. These were written
+                 by the seed command to populate the charts and are not real spend.`}
+          </p>
+          <label className="ml-auto flex items-center gap-2 text-2xs">
+            <input
+              type="checkbox"
+              checked={excludeDemo}
+              onChange={(event) => setExcludeDemo(event.target.checked)}
+            />
+            Real calls only
+          </label>
+        </div>
+      )}
 
       {usage.error ? (
         <ErrorState error={usage.error} retry={() => usage.refetch()} />

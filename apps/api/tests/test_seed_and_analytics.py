@@ -133,3 +133,41 @@ async def test_audit_log_records_privileged_actions(client: AsyncClient, org_a: 
     assert entry["actor_type"] == "user"
     assert entry["request_id"]
     assert "password" not in str(entry).lower()
+
+
+async def test_seeded_usage_is_distinguishable_from_real_spend(
+    client: AsyncClient, sessionmaker_fixture, vector_store, monkeypatch
+) -> None:
+    """The cost dashboard must not present fabricated history as real model spend."""
+    monkeypatch.setattr(db_module, "get_sessionmaker", lambda: sessionmaker_fixture)
+    await seed()
+    tokens = (
+        await client.post(
+            "/api/v1/auth/login",
+            json={"email": "admin@learnflow.dev", "password": DEMO_PASSWORD},
+        )
+    ).json()
+
+    with_demo = (await client.get("/api/v1/analytics/usage?days=60", headers=auth(tokens))).json()
+    assert with_demo["includes_demo_data"] is True
+    assert with_demo["demo_requests"] > 0
+    assert with_demo["total_cost_usd"] > 0
+
+    real_only = (
+        await client.get("/api/v1/analytics/usage?days=60&exclude_demo=true", headers=auth(tokens))
+    ).json()
+    assert real_only["includes_demo_data"] is False
+    assert real_only["total_requests"] < with_demo["total_requests"], (
+        "excluding seeded rows must actually change the figures"
+    )
+
+    overview = (await client.get("/api/v1/analytics/overview", headers=auth(tokens))).json()
+    assert overview["includes_demo_data"] is True
+    clean = (
+        await client.get("/api/v1/analytics/overview?exclude_demo=true", headers=auth(tokens))
+    ).json()
+    assert clean["includes_demo_data"] is False
+    assert clean["ai_requests"] < overview["ai_requests"]
+
+    # Embeddings written by real ingestion during the seed are not marked as demo data.
+    assert real_only["total_requests"] > 0, "genuine calls should survive the filter"

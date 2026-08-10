@@ -118,6 +118,9 @@ class LLMCall(TenantEntity):
         Uuid, ForeignKey("users.id", ondelete="SET NULL")
     )
     request_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    # True for rows written by the demo seed rather than by an actual model call, so the
+    # cost dashboard can tell fabricated history apart from real spend.
+    is_demo_data: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     workflow_execution_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("workflow_executions.id", ondelete="SET NULL"), index=True
     )
@@ -138,3 +141,4 @@ class UsageRecord(TenantEntity):
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True
     )
+    is_demo_data: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)

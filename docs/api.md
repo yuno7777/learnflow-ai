@@ -269,9 +269,9 @@ curl -X POST localhost:8000/api/v1/webhooks/n8n/callback \
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/analytics/overview` | The fourteen headline metrics |
+| GET | `/analytics/overview` | The fourteen headline metrics; `?exclude_demo=true` drops seeded rows |
 | GET | `/analytics/timeseries` | `?metric=ai_requests\|cost\|tokens\|executions\|submissions&days=30` |
-| GET | `/analytics/usage` | Cost by model and by operation, plus a daily series |
+| GET | `/analytics/usage` | Cost by model and by operation, plus a daily series. `includes_demo_data` and `demo_requests` report how much of it is seeded; `?exclude_demo=true` removes it |
 | GET | `/analytics/workflows` | Per-workflow success rate and average duration |
 | GET | `/analytics/inactive-learners` | Consumed by the reminder workflow |
 | GET | `/analytics/evaluations` | Review backlog and average confidence |

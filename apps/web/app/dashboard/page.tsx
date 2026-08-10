@@ -140,6 +140,18 @@ export default function DashboardPage() {
         }
       />
 
+      {overview.data?.includes_demo_data && (
+        <div className="mb-3 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2">
+          <p className="text-2xs text-warning">
+            AI usage and cost below include seeded demo history.{" "}
+            <Link href="/dashboard/usage" className="underline">
+              Filter to real calls only
+            </Link>
+            .
+          </p>
+        </div>
+      )}
+
       {overview.error ? (
         <ErrorState error={overview.error} retry={() => overview.refetch()} />
       ) : (

@@ -13,7 +13,6 @@ Create Date: 2026-08-05
 from __future__ import annotations
 
 from alembic import op
-
 from learnflow.models import Base
 
 revision = "0001"

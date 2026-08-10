@@ -68,6 +68,7 @@ async def overview(
     date_to: datetime | None = Query(None),
     course_id: uuid.UUID | None = Query(None),
     workspace_id: uuid.UUID | None = Query(None),
+    exclude_demo: bool = Query(False, description="Leave out rows written by the demo seed"),
 ) -> OverviewMetrics:
     org = repo.organization_id
     start, end = _window(date_from, date_to)
@@ -117,6 +118,10 @@ async def overview(
         .where(Document.organization_id == org, Document.status == DocumentStatus.indexed)
     )
 
+    call_filters = [LLMCall.organization_id == org, LLMCall.created_at.between(start, end)]
+    if exclude_demo:
+        call_filters.append(LLMCall.is_demo_data.is_(False))
+
     ai_requests, tokens, cost, avg_llm_latency = (
         await session.execute(
             select(
@@ -124,12 +129,19 @@ async def overview(
                 func.coalesce(func.sum(LLMCall.input_tokens + LLMCall.output_tokens), 0),
                 func.coalesce(func.sum(LLMCall.estimated_cost_usd), 0),
                 func.avg(LLMCall.latency_ms),
-            ).where(
-                LLMCall.organization_id == org,
-                LLMCall.created_at.between(start, end),
-            )
+            ).where(*call_filters)
         )
     ).one()
+
+    demo_rows = await session.scalar(
+        select(func.count())
+        .select_from(LLMCall)
+        .where(
+            LLMCall.organization_id == org,
+            LLMCall.created_at.between(start, end),
+            LLMCall.is_demo_data.is_(True),
+        )
+    )
 
     rag_latency = await session.scalar(
         select(func.avg(LLMCall.latency_ms)).where(
@@ -173,6 +185,7 @@ async def overview(
         average_workflow_duration_ms=float(avg_duration) if avg_duration is not None else None,
         rag_retrieval_latency_ms=float(rag_latency) if rag_latency is not None else None,
         llm_response_latency_ms=float(avg_llm_latency) if avg_llm_latency is not None else None,
+        includes_demo_data=not exclude_demo and bool(demo_rows),
     )
 
 
@@ -184,6 +197,7 @@ async def timeseries(
         "ai_requests", pattern="^(ai_requests|cost|tokens|executions|submissions)$"
     ),
     days: int = Query(30, ge=1, le=180),
+    exclude_demo: bool = Query(False, description="Leave out rows written by the demo seed"),
 ) -> Timeseries:
     org = repo.organization_id
     start = datetime.now(UTC) - timedelta(days=days)
@@ -195,9 +209,12 @@ async def timeseries(
             "tokens": func.coalesce(func.sum(LLMCall.input_tokens + LLMCall.output_tokens), 0),
         }
         value = aggregates[metric]
+        series_filters = [LLMCall.organization_id == org, LLMCall.created_at >= start]
+        if exclude_demo:
+            series_filters.append(LLMCall.is_demo_data.is_(False))
         stmt = (
             select(func.date(LLMCall.created_at), value)
-            .where(LLMCall.organization_id == org, LLMCall.created_at >= start)
+            .where(*series_filters)
             .group_by(func.date(LLMCall.created_at))
             .order_by(func.date(LLMCall.created_at))
         )
@@ -235,12 +252,25 @@ async def usage(
     session: SessionDep,
     days: int = Query(30, ge=1, le=180),
     model: str | None = Query(None),
+    exclude_demo: bool = Query(False, description="Leave out rows written by the demo seed"),
 ) -> UsageSummary:
     org = repo.organization_id
     start = datetime.now(UTC) - timedelta(days=days)
     filters = [UsageRecord.organization_id == org, UsageRecord.occurred_at >= start]
     if model:
         filters.append(UsageRecord.model == model)
+
+    demo_requests = await session.scalar(
+        select(func.count())
+        .select_from(UsageRecord)
+        .where(
+            UsageRecord.organization_id == org,
+            UsageRecord.occurred_at >= start,
+            UsageRecord.is_demo_data.is_(True),
+        )
+    )
+    if exclude_demo:
+        filters.append(UsageRecord.is_demo_data.is_(False))
 
     totals = (
         await session.execute(
@@ -329,6 +359,8 @@ async def usage(
     ]
 
     return UsageSummary(
+        includes_demo_data=not exclude_demo and bool(demo_requests),
+        demo_requests=int(demo_requests or 0),
         total_requests=int(totals[0] or 0),
         total_input_tokens=int(totals[1] or 0),
         total_output_tokens=int(totals[2] or 0),

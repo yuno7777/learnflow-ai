@@ -30,6 +30,9 @@ class OverviewMetrics(BaseModel):
     average_workflow_duration_ms: float | None
     rag_retrieval_latency_ms: float | None
     llm_response_latency_ms: float | None
+    # True when any figure above includes rows written by the demo seed rather than by a
+    # real model call. The UI says so rather than presenting fabricated spend as real.
+    includes_demo_data: bool = False
 
 
 class TimeseriesPoint(BaseModel):
@@ -63,6 +66,8 @@ class OperationUsageRow(BaseModel):
 
 
 class UsageSummary(BaseModel):
+    includes_demo_data: bool = False
+    demo_requests: int = 0
     total_requests: int
     total_input_tokens: int
     total_output_tokens: int

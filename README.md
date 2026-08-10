@@ -64,7 +64,7 @@ Set `LLM_PROVIDER=openai` and `OPENAI_API_KEY` when you want real models.
 
 ## What is actually implemented
 
-Everything below is exercised by the test suite (58 backend tests, 10 frontend tests).
+Everything below is exercised by the test suite (59 backend tests, 10 frontend tests).
 
 ### Knowledge base and RAG
 - Upload PDF, DOCX, TXT, Markdown, CSV. Files are validated against their **magic bytes**,
@@ -126,6 +126,11 @@ Everything below is exercised by the test suite (58 backend tests, 10 frontend t
 - Submitting as another learner, marking another learner's progress and asking the assistant
   about another learner are each refused, and each has a test.
 
+### Honest analytics
+- The seed writes 30 days of usage history so the charts are not empty on first launch.
+  Those rows are **flagged**, the API can exclude them (`?exclude_demo=true`), and the UI
+  says so with a "real calls only" toggle — seeded history never masquerades as real spend.
+
 ### Multi-tenancy and security
 - Tenant isolation lives in the **data layer**: the repository refuses to build a query
   against a tenant-scoped model without an organization filter, and stamps the tenant id on
@@ -154,7 +159,7 @@ learnflow-ai/
 │   │   │   ├── services/       repository, jobs, generation, evaluation, audit
 │   │   │   └── worker/         ARQ tasks and cron
 │   │   ├── alembic/            migrations
-│   │   └── tests/              58 backend tests
+│   │   └── tests/              59 backend tests
 │   └── web/                    Next.js 15 frontend
 │       ├── app/dashboard/      staff dashboard
 │       └── app/learn/          learner portal

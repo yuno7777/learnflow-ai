@@ -72,7 +72,9 @@ async def test_learner_sees_only_itself(client: AsyncClient, org_a: dict) -> Non
     assert listing["total"] == 1
     assert listing["items"][0]["id"] == mine["id"]
 
-    assert (await client.get(f"/api/v1/learners/{mine['id']}", headers=auth(tokens))).status_code == 200
+    assert (
+        await client.get(f"/api/v1/learners/{mine['id']}", headers=auth(tokens))
+    ).status_code == 200
     # Someone else's record is a 404, not a 403 - no confirming that the id exists.
     peek = await client.get(f"/api/v1/learners/{other['id']}", headers=auth(tokens))
     assert peek.status_code == 404
@@ -109,7 +111,9 @@ async def test_learner_only_sees_enrolled_published_courses(
 
     listing = (await client.get("/api/v1/courses", headers=auth(tokens))).json()
     assert listing["total"] == 0, "not enrolled in anything yet"
-    assert (await client.get(f"/api/v1/courses/{draft['id']}", headers=auth(tokens))).status_code == 404
+    assert (
+        await client.get(f"/api/v1/courses/{draft['id']}", headers=auth(tokens))
+    ).status_code == 404
     assert (
         await client.get(f"/api/v1/courses/{unenrolled['id']}", headers=auth(tokens))
     ).status_code == 404
@@ -179,9 +183,7 @@ async def test_learner_cannot_submit_as_someone_else(client: AsyncClient, org_a:
     assert listing["items"][0]["learner_id"] == mine["id"]
 
 
-async def test_learner_sees_own_result_after_evaluation(
-    client: AsyncClient, org_a: dict
-) -> None:
+async def test_learner_sees_own_result_after_evaluation(client: AsyncClient, org_a: dict) -> None:
     kb_id, document_id = await _indexed_document(client, org_a)
     assessment = (
         await client.post(
