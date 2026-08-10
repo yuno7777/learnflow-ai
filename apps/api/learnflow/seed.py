@@ -58,6 +58,9 @@ log = get_logger("seed")
 rng = random.Random(20260805)
 
 DEMO_PASSWORD = "LearnFlow!2026"
+# The first seeded learner also gets a portal login, so the learner side of the product is
+# reachable straight after seeding rather than needing a manual grant.
+DEMO_LEARNER_EMAIL = "ana.silva@acme.example.com"
 ORG_SLUG = "acme-training"
 
 PEOPLE = [
@@ -399,6 +402,35 @@ async def seed(reset: bool = False) -> None:
                 )
             )
         await session.flush()
+
+        # --- give the first learner a portal login -----------------------------------
+        portal_learner = next((x for x in learners if x.email == DEMO_LEARNER_EMAIL), learners[0])
+        if portal_learner.user_id is None:
+            portal_user = await session.scalar(
+                select(User).where(User.email == portal_learner.email)
+            )
+            if portal_user is None:
+                portal_user = User(
+                    email=portal_learner.email,
+                    full_name=portal_learner.full_name,
+                    password_hash=hash_password(DEMO_PASSWORD),
+                )
+                session.add(portal_user)
+                await session.flush()
+            existing_membership = await session.scalar(
+                select(OrganizationMember).where(
+                    OrganizationMember.organization_id == org_id,
+                    OrganizationMember.user_id == portal_user.id,
+                )
+            )
+            if existing_membership is None:
+                session.add(
+                    OrganizationMember(
+                        organization_id=org_id, user_id=portal_user.id, role=Role.learner
+                    )
+                )
+            portal_learner.user_id = portal_user.id
+            await session.flush()
 
         # --- assessments and submissions ---------------------------------------------
         assessments: list[Assessment] = []
