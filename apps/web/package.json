@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "build:check": "node -e \"process.env.NEXT_DIST_DIR='.next-verify';require('child_process').execSync('next build',{stdio:'inherit',env:process.env})\""
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.0",

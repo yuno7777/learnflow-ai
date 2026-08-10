@@ -117,17 +117,22 @@ export function Shell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-screen">
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-40 w-60 shrink-0 overflow-y-auto border-r border-border bg-card",
-          "transition-transform lg:static lg:translate-x-0",
+          "fixed inset-y-0 left-0 z-40 flex w-60 shrink-0 flex-col border-r border-border bg-card",
+          // Sticky + full viewport height on desktop so the nav scrolls independently of
+          // the page instead of being clipped once it outgrows the screen.
+          "transition-transform lg:sticky lg:top-0 lg:h-screen lg:translate-x-0",
           mobileOpen ? "translate-x-0" : "-translate-x-full",
         )}
       >
-        <div className="flex h-14 items-center px-4">
+        <div className="flex h-14 shrink-0 items-center border-b border-border px-4">
           <Link href="/dashboard" className="text-sm font-semibold tracking-tight">
             LearnFlow AI
           </Link>
         </div>
-        <nav className="px-2 pb-6" aria-label="Main">
+        <nav
+          className="scrollbar-thin flex-1 overflow-y-auto overscroll-contain px-2 pb-16 pt-2"
+          aria-label="Main"
+        >
           {NAV.map((section) => (
             <div key={section.group} className="mb-4">
               <p className="px-2 py-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
