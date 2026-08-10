@@ -67,5 +67,6 @@ class MeOut(BaseModel):
     user: UserOut
     organization_id: UUID
     role: Role
+    learner_id: UUID | None = None
     permissions: list[str]
     memberships: list[MembershipOut]

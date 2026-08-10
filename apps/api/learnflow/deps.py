@@ -13,8 +13,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .db import get_session
-from .errors import Forbidden, Unauthorized
-from .models import ROLE_PERMISSIONS, APIKey, Organization, OrganizationMember, Role, User, as_utc
+from .errors import Forbidden, NotFound, Unauthorized
+from .models import (
+    ROLE_PERMISSIONS,
+    APIKey,
+    Learner,
+    Organization,
+    OrganizationMember,
+    Role,
+    User,
+    as_utc,
+)
 from .security import decode_token, sha256_hex
 from .services.repository import TenantRepo
 
@@ -31,6 +40,13 @@ class Principal:
     role: Role
     user: User | None = None
     api_key: APIKey | None = None
+    # Set only for the learner role: the Learner record this login speaks for. Everything a
+    # learner can reach is scoped to it.
+    learner_id: uuid.UUID | None = None
+
+    @property
+    def is_learner(self) -> bool:
+        return self.role is Role.learner
 
     @property
     def actor_type(self) -> str:
@@ -101,8 +117,33 @@ async def get_principal(
     org = await session.get(Organization, principal.organization_id)
     if org is None or not org.is_active:
         raise Forbidden("Organization is inactive")
+
+    if principal.is_learner and principal.user is not None:
+        principal.learner_id = await session.scalar(
+            select(Learner.id).where(
+                Learner.user_id == principal.user.id,
+                Learner.organization_id == principal.organization_id,
+            )
+        )
+
     request.state.principal = principal
     return principal
+
+
+def scoped_learner_id(principal: Principal, requested: uuid.UUID | None) -> uuid.UUID | None:
+    """Resolve which learner an action may target.
+
+    Staff roles act on whoever they name. A learner may only ever act on itself, and asking
+    for another learner returns the same 404 a nonexistent id would - consistent with how
+    cross-tenant reads behave, so ids cannot be probed.
+    """
+    if not principal.is_learner:
+        return requested
+    if principal.learner_id is None:
+        raise Forbidden("This login is not linked to a learner record")
+    if requested is not None and requested != principal.learner_id:
+        raise NotFound("Learner not found")
+    return principal.learner_id
 
 
 PrincipalDep = Annotated[Principal, Depends(get_principal)]

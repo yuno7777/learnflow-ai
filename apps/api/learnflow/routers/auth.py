@@ -215,6 +215,7 @@ async def me(principal: PrincipalDep, session: SessionDep) -> MeOut:
         user=UserOut.model_validate(principal.user),
         organization_id=principal.organization_id,
         role=principal.role,
+        learner_id=principal.learner_id,
         permissions=sorted(p for p, roles in ROLE_PERMISSIONS.items() if principal.role in roles),
         memberships=await _memberships(session, principal.user),
     )
