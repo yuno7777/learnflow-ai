@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from fastapi import Request
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -37,14 +38,28 @@ def get_sessionmaker() -> async_sessionmaker[AsyncSession]:
     return _sessionmaker
 
 
-async def get_session() -> AsyncIterator[AsyncSession]:
-    """FastAPI dependency: one transaction per request, rolled back on any exception."""
-    async with get_sessionmaker()() as session:
+async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
+    """FastAPI dependency: the request's session, owned by UnitOfWorkMiddleware.
+
+    The commit deliberately does *not* live here. FastAPI runs the exit code of a `yield`
+    dependency **after the response has been sent**, so committing here means a client can
+    hold a 201 whose row is not yet visible — register, then immediately use the token, and
+    be told the user does not exist. The middleware commits before the response headers go
+    out instead; this dependency only hands out the session it created.
+    """
+    session: AsyncSession | None = request.scope.get("state", {}).get("db_session")
+    if session is not None:
+        yield session
+        return
+
+    # No middleware in the stack (direct ASGI calls, some tests): fall back to owning the
+    # transaction here, accepting the late-commit caveat above.
+    async with get_sessionmaker()() as fallback:
         try:
-            yield session
-            await session.commit()
+            yield fallback
+            await fallback.commit()
         except Exception:
-            await session.rollback()
+            await fallback.rollback()
             raise
 
 
