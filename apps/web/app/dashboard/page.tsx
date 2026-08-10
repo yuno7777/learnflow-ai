@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
+import * as React from "react";
 import {
   Area,
   AreaChart,
@@ -21,6 +22,7 @@ import {
   EmptyState,
   ErrorState,
   Metric,
+  Select,
   Skeleton,
   StatusBadge,
   Table,
@@ -29,17 +31,56 @@ import {
 } from "@/components/ui";
 import { api } from "@/lib/api";
 import { compactNumber, currency, dateTime, duration, number, percent } from "@/lib/format";
-import type { Execution, Overview, Timeseries, WorkflowStats } from "@/lib/types";
+import type {
+  Course,
+  Execution,
+  Overview,
+  Page,
+  Timeseries,
+  WorkflowStats,
+  Workspace,
+} from "@/lib/types";
+
+const RANGES = [
+  { days: 7, label: "Last 7 days" },
+  { days: 30, label: "Last 30 days" },
+  { days: 90, label: "Last 90 days" },
+] as const;
 
 export default function DashboardPage() {
+  // The overview endpoint already accepts these; the page used to ignore them and always
+  // report an unfiltered last-30-days.
+  const [days, setDays] = React.useState(30);
+  const [workspaceId, setWorkspaceId] = React.useState("");
+  const [courseId, setCourseId] = React.useState("");
+
+  const dateFrom = React.useMemo(
+    () => new Date(Date.now() - days * 86_400_000).toISOString(),
+    [days],
+  );
+  const filters = {
+    date_from: dateFrom,
+    workspace_id: workspaceId || undefined,
+    course_id: courseId || undefined,
+  };
+
+  const workspaces = useQuery({
+    queryKey: ["workspaces"],
+    queryFn: () => api.get<Page<Workspace>>("/api/v1/workspaces", { limit: 100 }),
+  });
+  const courses = useQuery({
+    queryKey: ["courses", "filter"],
+    queryFn: () => api.get<Page<Course>>("/api/v1/courses", { limit: 100 }),
+  });
+
   const overview = useQuery({
-    queryKey: ["analytics", "overview"],
-    queryFn: () => api.get<Overview>("/api/v1/analytics/overview"),
+    queryKey: ["analytics", "overview", days, workspaceId, courseId],
+    queryFn: () => api.get<Overview>("/api/v1/analytics/overview", filters),
   });
   const series = useQuery({
-    queryKey: ["analytics", "timeseries", "ai_requests"],
+    queryKey: ["analytics", "timeseries", "ai_requests", days],
     queryFn: () =>
-      api.get<Timeseries>("/api/v1/analytics/timeseries", { metric: "ai_requests", days: 30 }),
+      api.get<Timeseries>("/api/v1/analytics/timeseries", { metric: "ai_requests", days }),
   });
   const executions = useQuery({
     queryKey: ["executions", "recent"],
@@ -58,6 +99,45 @@ export default function DashboardPage() {
       <PageHeader
         title="Overview"
         description="Live figures for this organization. Empty values mean no data yet, not a broken widget."
+        actions={
+          <div className="flex flex-wrap items-center gap-2">
+            <Select
+              aria-label="Date range"
+              value={days}
+              onChange={(event) => setDays(Number(event.target.value))}
+            >
+              {RANGES.map((range) => (
+                <option key={range.days} value={range.days}>
+                  {range.label}
+                </option>
+              ))}
+            </Select>
+            <Select
+              aria-label="Workspace"
+              value={workspaceId}
+              onChange={(event) => setWorkspaceId(event.target.value)}
+            >
+              <option value="">All workspaces</option>
+              {workspaces.data?.items.map((workspace) => (
+                <option key={workspace.id} value={workspace.id}>
+                  {workspace.name}
+                </option>
+              ))}
+            </Select>
+            <Select
+              aria-label="Course"
+              value={courseId}
+              onChange={(event) => setCourseId(event.target.value)}
+            >
+              <option value="">All courses</option>
+              {courses.data?.items.map((course) => (
+                <option key={course.id} value={course.id}>
+                  {course.title}
+                </option>
+              ))}
+            </Select>
+          </div>
+        }
       />
 
       {overview.error ? (
@@ -95,7 +175,7 @@ export default function DashboardPage() {
             loading={overview.isLoading}
           />
           <Metric
-            label="AI requests (30d)"
+            label={`AI requests (${days}d)`}
             value={compactNumber(data?.ai_requests)}
             hint={`${compactNumber(data?.tokens_consumed)} tokens`}
             loading={overview.isLoading}
@@ -103,7 +183,7 @@ export default function DashboardPage() {
           <Metric
             label="Estimated model cost"
             value={currency(data?.estimated_cost_usd)}
-            hint="Last 30 days"
+            hint={`Last ${days} days`}
             loading={overview.isLoading}
           />
           <Metric
@@ -120,7 +200,7 @@ export default function DashboardPage() {
       <div className="mt-4 grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>
-            <CardTitle>AI requests, last 30 days</CardTitle>
+            <CardTitle>AI requests, last {days} days</CardTitle>
           </CardHeader>
           <CardContent>
             {series.isLoading ? (
@@ -180,7 +260,7 @@ export default function DashboardPage() {
             <LatencyRow label="RAG answer" value={data?.rag_retrieval_latency_ms} />
             <LatencyRow label="Workflow run" value={data?.average_workflow_duration_ms} />
             <p className="pt-2 text-2xs text-muted-foreground">
-              Averages over the last 30 days of recorded calls.
+              Averages over the last {days} days of recorded calls.
             </p>
           </CardContent>
         </Card>
