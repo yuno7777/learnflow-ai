@@ -37,7 +37,8 @@ export default function RegisterPage() {
       const pair = await api.post<TokenPair>("/api/v1/auth/register", values);
       tokens.save(pair);
       toast.success("Workspace created");
-      router.push("/dashboard");
+      // Learners get the portal; the admin dashboard would 403 on every panel.
+      router.push(pair.role === "learner" ? "/learn" : "/dashboard");
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "Registration failed");
     }

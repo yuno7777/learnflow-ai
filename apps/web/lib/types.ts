@@ -51,6 +51,8 @@ export interface Me {
   user: User;
   organization_id: string;
   role: Role;
+  /** Set only for the learner role: the learner record this login speaks for. */
+  learner_id: string | null;
   permissions: string[];
   memberships: Membership[];
 }
@@ -74,6 +76,7 @@ export interface Enrollment {
   course_title: string | null;
   status: string;
   progress: number;
+  completed_lesson_ids: string[];
   completed_at: string | null;
   created_at: string;
 }
@@ -533,4 +536,11 @@ export interface AssistantReply {
   input_tokens: number;
   output_tokens: number;
   estimated_cost_usd: number;
+}
+
+export interface LearnerAccessResult {
+  learner_id: string;
+  user_id: string;
+  email: string;
+  account_created: boolean;
 }

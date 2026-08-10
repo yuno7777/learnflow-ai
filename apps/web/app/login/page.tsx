@@ -32,7 +32,8 @@ export default function LoginPage() {
       const pair = await api.post<TokenPair>("/api/v1/auth/login", values);
       tokens.save(pair);
       toast.success(`Signed in to ${pair.memberships[0]?.organization_name ?? "your workspace"}`);
-      router.push("/dashboard");
+      // Learners get the portal; the admin dashboard would 403 on every panel.
+      router.push(pair.role === "learner" ? "/learn" : "/dashboard");
     } catch (error) {
       toast.error(error instanceof ApiError ? error.message : "Sign in failed");
     }
