@@ -29,13 +29,15 @@ from ..models import (
     WorkflowExecution,
     WorkflowStep,
 )
-from ..redis_client import EXECUTION_CHANNEL, get_redis
+from ..redis_client import EXECUTION_CHANNEL, get_redis, redis_enabled
 from . import n8n_client
 
 log = get_logger(__name__)
 
 
 async def publish(execution: WorkflowExecution, event: dict[str, Any]) -> None:
+    if not redis_enabled():
+        return
     try:
         await get_redis().publish(
             EXECUTION_CHANNEL.format(execution_id=execution.id),

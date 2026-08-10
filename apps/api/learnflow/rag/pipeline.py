@@ -30,7 +30,7 @@ from ..models import (
     PipelineRun,
     PipelineStage,
 )
-from ..redis_client import get_redis
+from ..redis_client import get_redis, redis_enabled
 from . import extract as extract_mod
 from .chunking import chunk_segments
 from .vectorstore import VectorRecord, get_vector_store
@@ -48,6 +48,8 @@ class StageFailure(Exception):
 
 
 async def _publish(document_id: uuid.UUID, payload: dict[str, Any]) -> None:
+    if not redis_enabled():
+        return
     try:
         await get_redis().publish(
             f"learnflow:document:{document_id}", json.dumps(payload, default=str)

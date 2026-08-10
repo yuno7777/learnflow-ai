@@ -17,7 +17,7 @@ from ..errors import Conflict, ValidationFailed
 from ..models import Document, DocumentChunk, DocumentStatus, KnowledgeBase, PipelineStage
 from ..rag import extract as extract_mod
 from ..rag.pipeline import delete_document_vectors
-from ..redis_client import get_redis
+from ..redis_client import get_redis, redis_enabled
 from ..schemas.common import Page, PageParams, page_params
 from ..schemas.knowledge import (
     ChunkOut,
@@ -323,7 +323,11 @@ async def stream_progress(document_id: uuid.UUID, repo: RepoDep):
                 }
             ),
         }
-        if document.status in (DocumentStatus.indexed, DocumentStatus.failed):
+        if (
+            document.status in (DocumentStatus.indexed, DocumentStatus.failed)
+            or not redis_enabled()
+        ):
+            # Without Redis there is nothing to subscribe to; the client falls back to polling.
             yield {"event": "done", "data": json.dumps({"status": document.status.value})}
             return
 

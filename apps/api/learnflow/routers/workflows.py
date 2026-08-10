@@ -14,7 +14,7 @@ from ..automation.runners import TEMPLATES
 from ..deps import PrincipalDep, RepoDep, SessionDep, require
 from ..errors import Conflict
 from ..models import ExecutionStatus, TriggerType, Workflow, WorkflowExecution, WorkflowStep
-from ..redis_client import EXECUTION_CHANNEL, get_redis
+from ..redis_client import EXECUTION_CHANNEL, get_redis, redis_enabled
 from ..schemas.automation import (
     ExecutionDetail,
     ExecutionOut,
@@ -281,7 +281,8 @@ async def stream_execution(execution_id: uuid.UUID, repo: RepoDep, session: Sess
                 default=str,
             ),
         }
-        if execution.status in TERMINAL:
+        if execution.status in TERMINAL or not redis_enabled():
+            # Without Redis there is nothing to subscribe to; the client falls back to polling.
             yield {"event": "done", "data": json.dumps({"status": execution.status.value})}
             return
 

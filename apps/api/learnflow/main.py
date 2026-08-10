@@ -9,8 +9,8 @@ from .config import settings
 from .db import dispose_engine
 from .errors import install_error_handlers
 from .logging import configure_logging, get_logger
-from .middleware import RateLimitMiddleware, RequestContextMiddleware
-from .redis_client import close_redis, get_redis
+from .middleware import RateLimitMiddleware, RequestContextMiddleware, UnitOfWorkMiddleware
+from .redis_client import close_redis, get_redis, redis_enabled
 from .routers import api_router
 
 configure_logging(json_output=settings.environment != "development")
@@ -48,6 +48,7 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Request-ID", "X-RateLimit-Remaining"],
 )
+app.add_middleware(UnitOfWorkMiddleware)
 app.add_middleware(RateLimitMiddleware)
 app.add_middleware(RequestContextMiddleware)
 install_error_handlers(app)
@@ -72,12 +73,17 @@ async def ready(response: Response) -> dict[str, object]:
         checks["database"] = "ok"
     except Exception as exc:
         checks["database"] = f"error: {type(exc).__name__}"
-    try:
-        await get_redis().ping()
-        checks["redis"] = "ok"
-    except Exception as exc:
-        checks["redis"] = f"error: {type(exc).__name__}"
-    healthy = all(v == "ok" for v in checks.values())
+    if not redis_enabled():
+        # Single-node mode. Redis being absent is configuration, not a fault — reporting it
+        # as an error would leave the pod permanently unready.
+        checks["redis"] = "disabled"
+    else:
+        try:
+            await get_redis().ping()
+            checks["redis"] = "ok"
+        except Exception as exc:
+            checks["redis"] = f"error: {type(exc).__name__}"
+    healthy = all(v in ("ok", "disabled") for v in checks.values())
     if not healthy:
         response.status_code = 503  # k8s must see a failing readiness probe, not a 200
     return {"status": "ok" if healthy else "degraded", "checks": checks}
