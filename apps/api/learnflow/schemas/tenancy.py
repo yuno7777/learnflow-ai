@@ -80,6 +80,19 @@ class LearnerUpdate(BaseModel):
     profile: dict[str, Any] | None = None
 
 
+class LearnerAccessGrant(BaseModel):
+    password: str | None = Field(
+        default=None, min_length=10, description="Initial password for a new account"
+    )
+
+
+class LearnerAccessResult(BaseModel):
+    learner_id: UUID
+    user_id: UUID
+    email: str
+    account_created: bool
+
+
 class LearnerOut(ORMModel):
     id: UUID
     email: str
@@ -103,6 +116,7 @@ class EnrollmentOut(ORMModel):
     course_title: str | None = None
     status: str
     progress: float
+    completed_lesson_ids: list[Any] = Field(default_factory=list)
     completed_at: datetime | None
     created_at: datetime
 

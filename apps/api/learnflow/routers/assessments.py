@@ -7,8 +7,8 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query, Request, status
 
-from ..deps import PrincipalDep, RepoDep, SessionDep, require
-from ..errors import Conflict, Forbidden, NotFound
+from ..deps import PrincipalDep, RepoDep, SessionDep, require, scoped_learner_id
+from ..errors import Conflict, Forbidden, NotFound, ValidationFailed
 from ..models import (
     Assessment,
     Evaluation,
@@ -50,10 +50,13 @@ def _serialize_question(question: Question, *, include_answers: bool) -> Questio
 @router.get("", response_model=Page[AssessmentOut], summary="List assessments")
 async def list_assessments(
     repo: RepoDep,
+    principal: PrincipalDep,
     params: PageParams = Depends(page_params),
     course_id: uuid.UUID | None = Query(None),
 ) -> Page[AssessmentOut]:
     where = [Assessment.course_id == course_id] if course_id else []
+    if principal.is_learner:
+        where.append(Assessment.is_published.is_(True))
     items, total = await repo.list(
         Assessment, where=where, sort=params.sort, limit=params.limit, offset=params.offset
     )
@@ -121,6 +124,8 @@ async def get_assessment(
     include_answers: bool = Query(False, description="Answer key — instructors and reviewers only"),
 ) -> AssessmentDetail:
     assessment = await repo.get(Assessment, assessment_id)
+    if principal.is_learner and not assessment.is_published:
+        raise NotFound("Assessment not found")
     if include_answers and not principal.has("assessment:write"):
         raise Forbidden("Your role cannot view the answer key")
     detail = AssessmentDetail(**AssessmentOut.model_validate(assessment).model_dump())
@@ -162,7 +167,11 @@ async def submit(
     assessment = await repo.get(Assessment, assessment_id)
     if not assessment.is_published:
         raise Conflict("Assessment is not published")
-    learner = await repo.get(Learner, body.learner_id)
+    # A learner submitting for somebody else is the obvious abuse here.
+    target = scoped_learner_id(principal, body.learner_id)
+    if target is None:
+        raise ValidationFailed("A submission must name a learner")
+    learner = await repo.get(Learner, target)
 
     valid_ids = {q.id for q in assessment.questions}
     unknown = [str(a.question_id) for a in body.answers if a.question_id not in valid_ids]
@@ -198,12 +207,14 @@ async def submit(
 @submissions_router.get("", response_model=Page[SubmissionOut], summary="List submissions")
 async def list_submissions(
     repo: RepoDep,
+    principal: PrincipalDep,
     params: PageParams = Depends(page_params),
     assessment_id: uuid.UUID | None = Query(None),
     learner_id: uuid.UUID | None = Query(None),
     submission_status: str | None = Query(None, alias="status"),
 ) -> Page[SubmissionOut]:
     where = []
+    learner_id = scoped_learner_id(principal, learner_id)
     if assessment_id:
         where.append(Submission.assessment_id == assessment_id)
     if learner_id:
@@ -224,8 +235,11 @@ async def list_submissions(
 @submissions_router.get(
     "/{submission_id}", response_model=SubmissionDetail, summary="Submission with its evaluation"
 )
-async def get_submission(submission_id: uuid.UUID, repo: RepoDep) -> SubmissionDetail:
+async def get_submission(
+    submission_id: uuid.UUID, repo: RepoDep, principal: PrincipalDep
+) -> SubmissionDetail:
     submission = await repo.get(Submission, submission_id)
+    scoped_learner_id(principal, submission.learner_id)
     detail = SubmissionDetail(**SubmissionOut.model_validate(submission).model_dump())
     if submission.evaluation is not None:
         detail.evaluation = EvaluationOut.model_validate(submission.evaluation)

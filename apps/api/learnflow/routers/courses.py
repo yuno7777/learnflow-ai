@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import selectinload
 
-from ..deps import PrincipalDep, RepoDep, SessionDep, require
+from ..deps import PrincipalDep, RepoDep, SessionDep, require, scoped_learner_id
 from ..errors import Conflict, NotFound
 from ..models import Course, CourseStatus, Enrollment, KnowledgeBase, Lesson, Module
 from ..schemas.common import Page, PageParams, page_params
@@ -72,10 +72,22 @@ async def _detail(session, repo, course: Course) -> CourseDetail:
 @router.get("", response_model=Page[CourseOut], summary="List courses")
 async def list_courses(
     repo: RepoDep,
+    principal: PrincipalDep,
     params: PageParams = Depends(page_params),
     course_status: CourseStatus | None = Query(None, alias="status"),
 ) -> Page[CourseOut]:
     where = [Course.status == course_status] if course_status else []
+    if principal.is_learner:
+        # Published, and only what they are actually enrolled in - drafts and other
+        # cohorts' courses are not theirs to browse.
+        where.append(Course.status == CourseStatus.published)
+        where.append(
+            Course.id.in_(
+                select(Enrollment.course_id).where(
+                    Enrollment.learner_id == scoped_learner_id(principal, None)
+                )
+            )
+        )
     items, total = await repo.list(
         Course, where=where, sort=params.sort, limit=params.limit, offset=params.offset
     )
@@ -157,8 +169,20 @@ async def generate(
 
 
 @router.get("/{course_id}", response_model=CourseDetail, summary="Course with modules and lessons")
-async def get_course(course_id: uuid.UUID, repo: RepoDep, session: SessionDep) -> CourseDetail:
-    return await _detail(session, repo, await repo.get(Course, course_id))
+async def get_course(
+    course_id: uuid.UUID, repo: RepoDep, session: SessionDep, principal: PrincipalDep
+) -> CourseDetail:
+    course = await repo.get(Course, course_id)
+    if principal.is_learner:
+        enrolled = await session.scalar(
+            repo.select(Enrollment).where(
+                Enrollment.course_id == course.id,
+                Enrollment.learner_id == scoped_learner_id(principal, None),
+            )
+        )
+        if enrolled is None or course.status is not CourseStatus.published:
+            raise NotFound("Course not found")
+    return await _detail(session, repo, course)
 
 
 @router.patch(

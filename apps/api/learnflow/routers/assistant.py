@@ -13,7 +13,7 @@ from ..ai.base import ChatMessage
 from ..ai.gateway import AIGateway
 from ..ai.prompts import LEARNER_ASSISTANT
 from ..ai.tools import TOOL_DEFINITIONS, ToolBox
-from ..deps import PrincipalDep, RepoDep, SessionDep
+from ..deps import PrincipalDep, RepoDep, SessionDep, scoped_learner_id
 from ..models import Conversation, Learner, Message
 from ..schemas.knowledge import MessageOut
 from ..services import jobs
@@ -69,7 +69,9 @@ async def ask(
         user_id=principal.user.id if principal.user else None,
         request_id=getattr(request.state, "request_id", None),
     )
-    learner = await repo.get(Learner, body.learner_id) if body.learner_id else None
+    # A learner asking about progress can only ever be asking about their own.
+    learner_id = scoped_learner_id(principal, body.learner_id)
+    learner = await repo.get(Learner, learner_id) if learner_id else None
     conversation = (
         await repo.get(Conversation, body.conversation_id)
         if body.conversation_id
@@ -77,7 +79,7 @@ async def ask(
             Conversation(
                 title=body.question[:120],
                 kind="learner_assistant",
-                learner_id=body.learner_id,
+                learner_id=learner_id,
                 user_id=principal.user.id if principal.user else None,
             )
         )

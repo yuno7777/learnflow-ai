@@ -9,12 +9,21 @@ from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy import select
 
 from ..automation import events
-from ..deps import PrincipalDep, RepoDep, SessionDep, require
-from ..errors import Conflict, NotFound
-from ..models import Course, Enrollment, Learner, Lesson, Module
+from ..deps import PrincipalDep, RepoDep, SessionDep, require, scoped_learner_id
+from ..errors import Conflict, NotFound, ValidationFailed
+from ..models import Course, Enrollment, Learner, Lesson, Module, OrganizationMember, Role, User
 from ..schemas.common import Page, PageParams, page_params
 from ..schemas.learning import EnrollRequest, ProgressUpdate
-from ..schemas.tenancy import EnrollmentOut, LearnerCreate, LearnerDetail, LearnerOut, LearnerUpdate
+from ..schemas.tenancy import (
+    EnrollmentOut,
+    LearnerAccessGrant,
+    LearnerAccessResult,
+    LearnerCreate,
+    LearnerDetail,
+    LearnerOut,
+    LearnerUpdate,
+)
+from ..security import hash_password
 from ..services import audit
 
 router = APIRouter(prefix="/learners", tags=["learners"])
@@ -38,6 +47,7 @@ async def _enrollments(session, repo, learner: Learner) -> list[EnrollmentOut]:
             course_title=title,
             status=e.status,
             progress=e.progress,
+            completed_lesson_ids=e.completed_lesson_ids,
             completed_at=e.completed_at,
             created_at=e.created_at,
         )
@@ -48,11 +58,15 @@ async def _enrollments(session, repo, learner: Learner) -> list[EnrollmentOut]:
 @router.get("", response_model=Page[LearnerOut], summary="List learners")
 async def list_learners(
     repo: RepoDep,
+    principal: PrincipalDep,
     params: PageParams = Depends(page_params),
     status_filter: str | None = Query(None, alias="status"),
     search: str | None = Query(None, min_length=2),
 ) -> Page[LearnerOut]:
     where = []
+    if principal.is_learner:
+        # A learner's directory is a directory of one.
+        where.append(Learner.id == scoped_learner_id(principal, None))
     if status_filter:
         where.append(Learner.status == status_filter)
     if search:
@@ -131,7 +145,10 @@ async def create_learner(
 
 
 @router.get("/{learner_id}", response_model=LearnerDetail, summary="Learner detail")
-async def get_learner(learner_id: uuid.UUID, repo: RepoDep, session: SessionDep) -> LearnerDetail:
+async def get_learner(
+    learner_id: uuid.UUID, repo: RepoDep, session: SessionDep, principal: PrincipalDep
+) -> LearnerDetail:
+    scoped_learner_id(principal, learner_id)
     learner = await repo.get(Learner, learner_id)
     detail = LearnerDetail.model_validate(learner)
     detail.enrollments = await _enrollments(session, repo, learner)
@@ -177,7 +194,8 @@ async def delete_learner(
     response_model=LearnerOut,
     summary="Record learner activity (keeps them out of the inactivity workflow)",
 )
-async def touch_activity(learner_id: uuid.UUID, repo: RepoDep) -> Learner:
+async def touch_activity(learner_id: uuid.UUID, repo: RepoDep, principal: PrincipalDep) -> Learner:
+    scoped_learner_id(principal, learner_id)
     learner = await repo.get(Learner, learner_id)
     learner.last_active_at = datetime.now(UTC)
     learner.reminders_sent = 0
@@ -196,7 +214,9 @@ async def update_progress(
     body: ProgressUpdate,
     repo: RepoDep,
     session: SessionDep,
+    principal: PrincipalDep,
 ) -> EnrollmentOut:
+    scoped_learner_id(principal, learner_id)
     learner = await repo.get(Learner, learner_id)
     enrollment = await session.scalar(
         repo.select(Enrollment).where(
@@ -249,6 +269,7 @@ async def update_progress(
         course_title=course.title,
         status=enrollment.status,
         progress=enrollment.progress,
+        completed_lesson_ids=enrollment.completed_lesson_ids,
         completed_at=enrollment.completed_at,
         created_at=enrollment.created_at,
     )
@@ -281,8 +302,82 @@ async def bulk_enroll(
                 course_title=course.title,
                 status=enrollment.status,
                 progress=enrollment.progress,
+                completed_lesson_ids=enrollment.completed_lesson_ids,
                 completed_at=enrollment.completed_at,
                 created_at=enrollment.created_at,
             )
         )
     return created
+
+
+@router.post(
+    "/{learner_id}/access",
+    response_model=LearnerAccessResult,
+    dependencies=[Depends(require("learner:manage"))],
+    summary="Give a learner a login for the learner portal",
+)
+async def grant_access(
+    learner_id: uuid.UUID,
+    body: LearnerAccessGrant,
+    repo: RepoDep,
+    session: SessionDep,
+    principal: PrincipalDep,
+    request: Request,
+) -> LearnerAccessResult:
+    """Link a learner record to a user account with the learner role.
+
+    Learner records and login accounts are separate on purpose - most learners in an LMS are
+    imported from an HRIS and never sign in. This is the deliberate step that turns one into
+    someone who can use the portal.
+    """
+    learner = await repo.get(Learner, learner_id)
+
+    user = await session.scalar(select(User).where(User.email == learner.email))
+    created = user is None
+    if user is None:
+        if not body.password:
+            raise ValidationFailed(
+                "A new account needs an initial password (there is no mail server configured)"
+            )
+        user = User(
+            email=learner.email,
+            full_name=learner.full_name,
+            password_hash=hash_password(body.password),
+        )
+        session.add(user)
+        await session.flush()
+    elif body.password:
+        user.password_hash = hash_password(body.password)
+
+    membership = await session.scalar(
+        select(OrganizationMember).where(
+            OrganizationMember.organization_id == repo.organization_id,
+            OrganizationMember.user_id == user.id,
+        )
+    )
+    if membership is None:
+        session.add(
+            OrganizationMember(
+                organization_id=repo.organization_id, user_id=user.id, role=Role.learner
+            )
+        )
+    elif membership.role is not Role.learner:
+        # Never quietly demote an instructor who happens to share this email address.
+        raise Conflict(
+            f"That email already belongs to a {membership.role.value} in this organization"
+        )
+
+    learner.user_id = user.id
+    await repo.flush()
+    await audit.record(
+        session,
+        principal,
+        "learner.grant_access",
+        "learner",
+        str(learner.id),
+        request=request,
+        details={"email": learner.email, "account_created": created},
+    )
+    return LearnerAccessResult(
+        learner_id=learner.id, user_id=user.id, email=learner.email, account_created=created
+    )
