@@ -26,6 +26,16 @@ _WORD = re.compile(r"[a-z0-9']+")
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
 _ALTERNATION = re.compile(r"^\^?\(([^)]+)\)\$?$")
 
+# Function words carry no topical signal. A real embedding model learns to discount them;
+# hashing them here would make any two English sentences look similar, which would quietly
+# defeat the similarity threshold that the assistant's refusal depends on.
+_STOPWORDS = frozenset(
+    """a an and are as at be been but by can could did do does for from had has have how
+    i if in into is it its may might must not of on or should so than that the their then
+    there these they this those to was were what when where which who why will with would
+    you your""".split()
+)
+
 
 def _seed(text: str) -> int:
     return int(hashlib.sha256(text.encode()).hexdigest()[:12], 16)
@@ -176,7 +186,8 @@ class MockEmbeddings:
 
     def _vector(self, text: str) -> list[float]:
         vec = [0.0] * self.dimensions
-        for token in _WORD.findall(text.lower()):
+        tokens = [t for t in _WORD.findall(text.lower()) if t not in _STOPWORDS and len(t) > 2]
+        for token in tokens:
             h = int(hashlib.md5(token.encode()).hexdigest(), 16)
             vec[h % self.dimensions] += 1.0
             vec[(h >> 16) % self.dimensions] += 0.5  # second hash smooths collisions
