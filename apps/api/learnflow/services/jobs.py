@@ -64,9 +64,16 @@ async def enqueue(
         resource_id=resource_id,
         max_attempts=max_attempts,
         callback_url=callback_url,
+        # Persisted so the database-backed worker can dispatch without Redis, and so the
+        # job ledger shows what a task was actually asked to do.
+        payload=task_kwargs,
     )
     session.add(job)
     await session.flush()
+
+    if settings.job_queue == "database":
+        # Single-node mode: the standalone worker claims queued rows by polling.
+        return job
 
     try:
         arq = await get_arq()

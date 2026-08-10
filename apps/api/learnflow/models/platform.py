@@ -81,6 +81,8 @@ class Job(TenantEntity):
     max_attempts: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     error: Mapped[str | None] = mapped_column(Text)
     result: Mapped[dict[str, Any]] = mapped_column(default=dict, nullable=False)
+    # Task kwargs, so the database-backed worker can dispatch without Redis.
+    payload: Mapped[dict[str, Any]] = mapped_column(default=dict, nullable=False)
     callback_url: Mapped[str | None] = mapped_column(String(500))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
