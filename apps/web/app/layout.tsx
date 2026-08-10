@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { Providers } from "@/components/providers";
+import { THEME_BOOTSTRAP } from "@/components/theme";
 
 import "./globals.css";
 
@@ -14,6 +15,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Applies the stored theme before first paint, so there is no light flash. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP }} />
+      </head>
       <body className="min-h-screen bg-background">
         <a
           href="#main"
