@@ -5,6 +5,7 @@ import Link from "next/link";
 import * as React from "react";
 import { toast } from "sonner";
 
+import { Pagination } from "@/components/pagination";
 import { PageHeader } from "@/components/shell";
 import {
   Badge,
@@ -37,6 +38,8 @@ const TYPES = ["multiple_choice", "true_false", "short_answer", "scenario"] as c
 
 export default function AssessmentsPage() {
   const queryClient = useQueryClient();
+  const [offset, setOffset] = React.useState(0);
+  const [limit, setLimit] = React.useState(25);
   const [open, setOpen] = React.useState(false);
   const [title, setTitle] = React.useState("");
   const [knowledgeBaseId, setKnowledgeBaseId] = React.useState("");
@@ -47,8 +50,8 @@ export default function AssessmentsPage() {
   const [types, setTypes] = React.useState<string[]>(["multiple_choice", "short_answer"]);
 
   const assessments = useQuery({
-    queryKey: ["assessments"],
-    queryFn: () => api.get<Page<Assessment>>("/api/v1/assessments", { limit: 50 }),
+    queryKey: ["assessments", offset, limit],
+    queryFn: () => api.get<Page<Assessment>>("/api/v1/assessments", { limit, offset }),
   });
   const bases = useQuery({
     queryKey: ["knowledge-bases"],
@@ -176,6 +179,14 @@ export default function AssessmentsPage() {
               })}
             </tbody>
           </Table>
+          <Pagination
+            total={assessments.data?.total ?? 0}
+            limit={limit}
+            offset={offset}
+            onOffsetChange={setOffset}
+            onLimitChange={setLimit}
+            label="assessments"
+          />
         </Card>
       )}
 

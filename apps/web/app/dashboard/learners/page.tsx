@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 import { toast } from "sonner";
 
+import { Pagination } from "@/components/pagination";
 import { PageHeader } from "@/components/shell";
 import {
   Button,
@@ -29,23 +30,26 @@ import type { Course, Learner, LearnerDetail, Page } from "@/lib/types";
 
 export default function LearnersPage() {
   const queryClient = useQueryClient();
+  const [offset, setOffset] = React.useState(0);
+  const [limit, setLimit] = React.useState(25);
   const [search, setSearch] = React.useState("");
   const [open, setOpen] = React.useState(false);
   const [selected, setSelected] = React.useState<string | null>(null);
   const [form, setForm] = React.useState({ email: "", full_name: "", course_id: "" });
 
   const learners = useQuery({
-    queryKey: ["learners", search],
+    queryKey: ["learners", search, offset, limit],
     queryFn: () =>
       api.get<Page<Learner>>("/api/v1/learners", {
-        limit: 50,
+        limit,
+        offset,
         search: search.length > 1 ? search : undefined,
       }),
   });
 
   const courses = useQuery({
     queryKey: ["courses", "published"],
-    queryFn: () => api.get<Page<Course>>("/api/v1/courses", { limit: 50 }),
+    queryFn: () => api.get<Page<Course>>("/api/v1/courses", { limit: 100 }),
   });
 
   const detail = useQuery({
@@ -147,6 +151,14 @@ export default function LearnersPage() {
               ))}
             </tbody>
           </Table>
+          <Pagination
+            total={learners.data?.total ?? 0}
+            limit={limit}
+            offset={offset}
+            onOffsetChange={setOffset}
+            onLimitChange={setLimit}
+            label="learners"
+          />
         </Card>
       )}
 

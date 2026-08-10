@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import * as React from "react";
 
+import { Pagination } from "@/components/pagination";
 import { PageHeader } from "@/components/shell";
 import {
   Badge,
@@ -21,13 +22,16 @@ import { dateTime } from "@/lib/format";
 import type { AuditEntry, Page } from "@/lib/types";
 
 export default function AuditLogPage() {
+  const [offset, setOffset] = React.useState(0);
+  const [limit, setLimit] = React.useState(25);
   const [action, setAction] = React.useState("");
 
   const logs = useQuery({
-    queryKey: ["audit", action],
+    queryKey: ["audit", action, offset, limit],
     queryFn: () =>
       api.get<Page<AuditEntry>>("/api/v1/audit-logs", {
-        limit: 100,
+        limit,
+        offset,
         action: action || undefined,
       }),
   });
@@ -101,6 +105,14 @@ export default function AuditLogPage() {
               ))}
             </tbody>
           </Table>
+          <Pagination
+            total={logs.data?.total ?? 0}
+            limit={limit}
+            offset={offset}
+            onOffsetChange={setOffset}
+            onLimitChange={setLimit}
+            label="entries"
+          />
         </Card>
       )}
     </>

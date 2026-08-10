@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 import * as React from "react";
 import { toast } from "sonner";
 
+import { Pagination } from "@/components/pagination";
 import { PageHeader } from "@/components/shell";
 import {
   Button,
@@ -30,6 +31,8 @@ const ACCEPT = ".pdf,.docx,.txt,.md,.csv";
 function DocumentsView() {
   const params = useSearchParams();
   const queryClient = useQueryClient();
+  const [offset, setOffset] = React.useState(0);
+  const [limit, setLimit] = React.useState(25);
   const fileInput = React.useRef<HTMLInputElement>(null);
   const [knowledgeBaseId, setKnowledgeBaseId] = React.useState(
     params.get("knowledge_base_id") ?? "",
@@ -47,10 +50,11 @@ function DocumentsView() {
   }, [bases.data, knowledgeBaseId]);
 
   const documents = useQuery({
-    queryKey: ["documents", knowledgeBaseId],
+    queryKey: ["documents", knowledgeBaseId, offset, limit],
     queryFn: () =>
       api.get<Page<DocumentSummary>>("/api/v1/documents", {
-        limit: 50,
+        limit,
+        offset,
         knowledge_base_id: knowledgeBaseId || undefined,
       }),
     // Ingestion runs on the worker; poll while anything is mid-flight.
@@ -58,6 +62,7 @@ function DocumentsView() {
       query.state.data?.items.some((d) => d.status === "pending" || d.status === "processing")
         ? 2500
         : false,
+    refetchIntervalInBackground: true,
   });
 
   const upload = useMutation({
@@ -233,6 +238,14 @@ function DocumentsView() {
               ))}
             </tbody>
           </Table>
+          <Pagination
+            total={documents.data?.total ?? 0}
+            limit={limit}
+            offset={offset}
+            onOffsetChange={setOffset}
+            onLimitChange={setLimit}
+            label="documents"
+          />
         </Card>
       )}
     </>

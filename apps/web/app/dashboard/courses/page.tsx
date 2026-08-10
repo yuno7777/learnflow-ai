@@ -5,6 +5,7 @@ import Link from "next/link";
 import * as React from "react";
 import { toast } from "sonner";
 
+import { Pagination } from "@/components/pagination";
 import { PageHeader } from "@/components/shell";
 import {
   Button,
@@ -28,6 +29,8 @@ import type { CourseDetail, Course, DocumentSummary, KnowledgeBase, Page } from 
 
 export default function CoursesPage() {
   const queryClient = useQueryClient();
+  const [offset, setOffset] = React.useState(0);
+  const [limit, setLimit] = React.useState(25);
   const [open, setOpen] = React.useState(false);
   const [subject, setSubject] = React.useState("");
   const [moduleCount, setModuleCount] = React.useState(4);
@@ -36,10 +39,11 @@ export default function CoursesPage() {
   const [documentIds, setDocumentIds] = React.useState<string[]>([]);
 
   const courses = useQuery({
-    queryKey: ["courses"],
-    queryFn: () => api.get<Page<Course>>("/api/v1/courses", { limit: 50 }),
+    queryKey: ["courses", offset, limit],
+    queryFn: () => api.get<Page<Course>>("/api/v1/courses", { limit, offset }),
     refetchInterval: (query) =>
       query.state.data?.items.some((c) => c.status === "generating") ? 3000 : false,
+    refetchIntervalInBackground: true,
   });
 
   const bases = useQuery({
@@ -149,6 +153,14 @@ export default function CoursesPage() {
               ))}
             </tbody>
           </Table>
+          <Pagination
+            total={courses.data?.total ?? 0}
+            limit={limit}
+            offset={offset}
+            onOffsetChange={setOffset}
+            onLimitChange={setLimit}
+            label="courses"
+          />
         </Card>
       )}
 

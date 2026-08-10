@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import * as React from "react";
 
+import { Pagination } from "@/components/pagination";
 import { PageHeader } from "@/components/shell";
 import {
   Card,
@@ -33,15 +34,19 @@ const KINDS = [
 ];
 
 export default function JobsPage() {
+  const [offset, setOffset] = React.useState(0);
+  const [limit, setLimit] = React.useState(25);
   const [kind, setKind] = React.useState("");
 
   const jobs = useQuery({
-    queryKey: ["jobs", kind],
-    queryFn: () => api.get<Page<Job>>("/api/v1/jobs", { limit: 50, kind: kind || undefined }),
+    queryKey: ["jobs", kind, offset, limit],
+    queryFn: () => api.get<Page<Job>>("/api/v1/jobs", { limit,
+        offset, kind: kind || undefined }),
     refetchInterval: (query) =>
       query.state.data?.items.some((job) => job.status === "queued" || job.status === "running")
         ? 3000
         : false,
+    refetchIntervalInBackground: true,
   });
 
   return (
@@ -117,6 +122,14 @@ export default function JobsPage() {
               ))}
             </tbody>
           </Table>
+          <Pagination
+            total={jobs.data?.total ?? 0}
+            limit={limit}
+            offset={offset}
+            onOffsetChange={setOffset}
+            onLimitChange={setLimit}
+            label="jobs"
+          />
         </Card>
       )}
     </>

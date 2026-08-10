@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 import { toast } from "sonner";
 
+import { Pagination } from "@/components/pagination";
 import { PageHeader } from "@/components/shell";
 import {
   Badge,
@@ -40,15 +41,18 @@ const CATEGORIES = [
 
 export default function TicketsPage() {
   const queryClient = useQueryClient();
+  const [offset, setOffset] = React.useState(0);
+  const [limit, setLimit] = React.useState(25);
   const [category, setCategory] = React.useState("");
   const [open, setOpen] = React.useState(false);
   const [selected, setSelected] = React.useState<Ticket | null>(null);
   const [form, setForm] = React.useState({ subject: "", body: "" });
 
   const tickets = useQuery({
-    queryKey: ["tickets", category],
+    queryKey: ["tickets", category, offset, limit],
     queryFn: () =>
-      api.get<Page<Ticket>>("/api/v1/tickets", { limit: 50, category: category || undefined }),
+      api.get<Page<Ticket>>("/api/v1/tickets", { limit,
+        offset, category: category || undefined }),
     refetchInterval: 20_000,
   });
 
@@ -162,6 +166,14 @@ export default function TicketsPage() {
               ))}
             </tbody>
           </Table>
+          <Pagination
+            total={tickets.data?.total ?? 0}
+            limit={limit}
+            offset={offset}
+            onOffsetChange={setOffset}
+            onLimitChange={setLimit}
+            label="tickets"
+          />
         </Card>
       )}
 
