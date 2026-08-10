@@ -26,7 +26,13 @@ import {
 } from "@/components/ui";
 import { ApiError, api } from "@/lib/api";
 import { dateTime, relativeTime } from "@/lib/format";
-import type { Course, Learner, LearnerDetail, Page } from "@/lib/types";
+import type {
+  Course,
+  Learner,
+  LearnerAccessResult,
+  LearnerDetail,
+  Page,
+} from "@/lib/types";
 
 export default function LearnersPage() {
   const queryClient = useQueryClient();
@@ -36,6 +42,10 @@ export default function LearnersPage() {
   const [open, setOpen] = React.useState(false);
   const [selected, setSelected] = React.useState<string | null>(null);
   const [form, setForm] = React.useState({ email: "", full_name: "", course_id: "" });
+  const [accessFor, setAccessFor] = React.useState<LearnerDetail | null>(null);
+  const [accessPassword, setAccessPassword] = React.useState("");
+  const [enrolCourse, setEnrolCourse] = React.useState("");
+  const [picked, setPicked] = React.useState<string[]>([]);
 
   const learners = useQuery({
     queryKey: ["learners", search, offset, limit],
@@ -75,6 +85,35 @@ export default function LearnersPage() {
       void queryClient.invalidateQueries({ queryKey: ["executions"] });
     },
     onError: (error) => toast.error(error instanceof ApiError ? error.message : "Could not add learner"),
+  });
+
+  const grantAccess = useMutation({
+    mutationFn: () =>
+      api.post<LearnerAccessResult>(`/api/v1/learners/${accessFor?.id}/access`, {
+        password: accessPassword || undefined,
+      }),
+    onSuccess: (result) => {
+      toast.success(result.account_created ? "Portal login created" : "Existing account linked", {
+        description: `${result.email} can now sign in and see only their own courses.`,
+      });
+      setAccessFor(null);
+      setAccessPassword("");
+      void queryClient.invalidateQueries({ queryKey: ["learner"] });
+    },
+    onError: (error) =>
+      toast.error(error instanceof ApiError ? error.message : "Could not grant access"),
+  });
+
+  const bulkEnrol = useMutation({
+    mutationFn: () =>
+      api.post("/api/v1/learners/enroll", { learner_ids: picked }, { course_id: enrolCourse }),
+    onSuccess: () => {
+      toast.success(`Enrolled ${picked.length} learner${picked.length === 1 ? "" : "s"}`);
+      setPicked([]);
+      setEnrolCourse("");
+      void queryClient.invalidateQueries({ queryKey: ["learners"] });
+    },
+    onError: (error) => toast.error(error instanceof ApiError ? error.message : "Enrolment failed"),
   });
 
   return (
@@ -118,9 +157,39 @@ export default function LearnersPage() {
         />
       ) : (
         <Card>
+          {picked.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 border-b border-border bg-muted/40 px-3 py-2">
+              <span className="text-2xs text-muted-foreground">{picked.length} selected</span>
+              <Select
+                aria-label="Course to enrol into"
+                className="h-7 text-2xs"
+                value={enrolCourse}
+                onChange={(event) => setEnrolCourse(event.target.value)}
+              >
+                <option value="">Choose a course…</option>
+                {courses.data?.items.map((course) => (
+                  <option key={course.id} value={course.id}>
+                    {course.title}
+                  </option>
+                ))}
+              </Select>
+              <Button
+                size="sm"
+                disabled={!enrolCourse}
+                loading={bulkEnrol.isPending}
+                onClick={() => bulkEnrol.mutate()}
+              >
+                Enrol
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setPicked([])}>
+                Clear
+              </Button>
+            </div>
+          )}
           <Table>
             <thead>
               <tr>
+                <Th className="w-8" />
                 <Th>Learner</Th>
                 <Th>Status</Th>
                 <Th>Last active</Th>
@@ -136,6 +205,20 @@ export default function LearnersPage() {
                   className="cursor-pointer hover:bg-muted/50"
                   onClick={() => setSelected(learner.id)}
                 >
+                  <Td onClick={(event) => event.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${learner.full_name}`}
+                      checked={picked.includes(learner.id)}
+                      onChange={(event) =>
+                        setPicked((previous) =>
+                          event.target.checked
+                            ? [...previous, learner.id]
+                            : previous.filter((id) => id !== learner.id),
+                        )
+                      }
+                    />
+                  </Td>
                   <Td>
                     <p className="font-medium">{learner.full_name}</p>
                     <p className="text-2xs text-muted-foreground">{learner.email}</p>
@@ -225,6 +308,24 @@ export default function LearnersPage() {
               </div>
             )}
 
+            <div className="rounded-md border border-border p-3">
+              <p className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Portal access
+              </p>
+              <p className="mt-1 text-2xs text-muted-foreground">
+                Learner records and logins are separate. Grant access to let this person sign in
+                and see their own courses, assessments and results.
+              </p>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="mt-2"
+                onClick={() => setAccessFor(detail.data)}
+              >
+                Grant portal access
+              </Button>
+            </div>
+
             <Button
               variant="secondary"
               size="sm"
@@ -240,6 +341,48 @@ export default function LearnersPage() {
           </div>
         )}
       </Drawer>
+
+      <Modal
+        open={Boolean(accessFor)}
+        onClose={() => setAccessFor(null)}
+        title={`Portal access for ${accessFor?.full_name ?? ""}`}
+      >
+        <form
+          className="space-y-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            grantAccess.mutate();
+          }}
+        >
+          <p className="text-xs text-muted-foreground">
+            Creates a login for <strong>{accessFor?.email}</strong> with the learner role. They
+            will see their own courses, assessments and results, and nothing else in the
+            organization.
+          </p>
+          <div className="space-y-1">
+            <Label htmlFor="access-password">Initial password</Label>
+            <Input
+              id="access-password"
+              type="password"
+              minLength={10}
+              value={accessPassword}
+              onChange={(event) => setAccessPassword(event.target.value)}
+            />
+            <p className="text-2xs text-muted-foreground">
+              At least 10 characters. There is no mail server configured, so share it with them
+              directly.
+            </p>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="secondary" onClick={() => setAccessFor(null)}>
+              Cancel
+            </Button>
+            <Button type="submit" loading={grantAccess.isPending}>
+              Grant access
+            </Button>
+          </div>
+        </form>
+      </Modal>
 
       <Modal open={open} onClose={() => setOpen(false)} title="Add learner">
         <form
