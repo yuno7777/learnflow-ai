@@ -30,6 +30,13 @@ playwright-report/
 test-results/
 .playwright/
 
+# Local run artefacts
+*.log
+.api.log
+.worker.log
+.web.log
+.chroma-server.log
+
 # Local data
 .chroma/
 .uploads/
