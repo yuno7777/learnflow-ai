@@ -508,3 +508,29 @@ export interface InactiveLearnersResponse {
   learners: InactiveLearner[];
   generated_at: string;
 }
+
+export interface Workspace {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  created_at: string;
+}
+
+export interface TransformJob {
+  output_type: string;
+  job_id: string;
+  status: string;
+}
+
+export interface AssistantReply {
+  answer: string;
+  conversation_id: string;
+  message_id: string;
+  tool_calls: Array<{ name: string; arguments: Record<string, unknown> }>;
+  citations: Citation[];
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  estimated_cost_usd: number;
+}
