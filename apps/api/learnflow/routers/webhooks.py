@@ -1,9 +1,28 @@
-"""Inbound webhooks.
+"""Inbound signed webhook router with replay defense and idempotency receipts.
 
-Every request must carry `X-LearnFlow-Signature: t=<unix>,v1=<hmac-sha256>` over the raw
-body. Verification is constant-time, timestamps outside the tolerance window are rejected
-(replay), and the mac is stored in `webhook_receipts` with a unique constraint so a replayed
-*fresh-looking* body is still processed exactly once.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file securely receives inbound HTTP webhooks from external systems:
+1. Cryptographic HMAC Verification (`_verify`): Validates `X-LearnFlow-Signature: t=<unix>,v1=<hmac>`
+   over the raw request body bytes.
+2. Replay Protection (`_record_receipt`): Inserts the signature into `webhook_receipts`.
+   PostgreSQL's unique database constraint on `signature` guarantees that identical or
+   replayed webhooks fail immediately with 401 Unauthorized.
+3. `POST /webhooks/n8n/callback`: Receives workflow step outputs and completion statuses
+   from external n8n workflow executions (`apply_callback`).
+4. `POST /webhooks/events/{org_slug}/{event_name}`: Allows external HRIS or LMS systems
+   to trigger domain events into LearnFlow.
+
+===============================================================================
+SECURITY FLOW (Webhook Ingestion):
+===============================================================================
+Inbound POST (Raw Bytes, Signature Header)
+  ──► Constant-Time HMAC-SHA256 Verification (`security.verify_signature`)
+  ──► Freshness Window Check (Rejected if timestamp older than 300s)
+  ──► Database Unique Constraint Insert (`WebhookReceipt(signature=mac)`)
+  ──► If Duplicate Signature: `IntegrityError` ──► `401 Unauthorized (Replayed)`
+  ──► Process Callback / Emit Event
 """
 
 from __future__ import annotations
@@ -34,7 +53,7 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
 def _verify(request_headers, body: bytes) -> str:
-    """Verify the signature over the raw bytes and return the mac (the replay key)."""
+    """Verifies HMAC signature over raw body bytes and returns the MAC hex string."""
     signature_header = request_headers.get("X-LearnFlow-Signature")
     if not signature_header:
         raise Unauthorized("Missing X-LearnFlow-Signature header")
@@ -50,8 +69,7 @@ async def _record_receipt(
     event_id: str | None,
     payload: dict[str, Any],
 ) -> WebhookReceipt:
-    """Insert the receipt. The unique constraint on `signature` is the replay defence, so a
-    duplicate insert - not an application-level check - is what rejects a replay."""
+    """Inserts a webhook receipt. The database unique constraint on `signature` blocks replay attacks."""
     receipt = WebhookReceipt(
         organization_id=organization_id,
         source=source,
@@ -75,15 +93,17 @@ async def _record_receipt(
     summary="n8n reports back on an execution it was handed",
 )
 async def n8n_callback(request: Request, session: SessionDep) -> dict[str, Any]:
+    """Inbound webhook called by n8n upon workflow completion."""
     body = await request.body()
     mac = _verify(request.headers, body)
     callback = ExecutionCallback.model_validate_json(body)
 
-    # Resolve the execution first: the receipt is tenant-scoped, and which tenant this
-    # callback belongs to is only knowable from the execution it names.
+    # 1. Look up target execution
     execution = await session.get(WorkflowExecution, callback.execution_id)
     if execution is None:
         raise NotFound("Unknown execution id")
+        
+    # 2. Record unique receipt for replay protection
     await _record_receipt(
         session,
         source="n8n",
@@ -93,6 +113,7 @@ async def n8n_callback(request: Request, session: SessionDep) -> dict[str, Any]:
         payload={"execution_id": str(callback.execution_id), "status": callback.status.value},
     )
 
+    # 3. Apply steps and final status
     await apply_callback(
         session,
         execution,
@@ -125,6 +146,7 @@ async def inbound_event(
     session: SessionDep,
     x_learnflow_event_id: str | None = Header(default=None),
 ) -> dict[str, Any]:
+    """Inbound webhook allowing third-party applications to trigger domain events."""
     organization = await session.scalar(
         select(Organization).where(Organization.slug == organization_slug)
     )

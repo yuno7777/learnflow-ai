@@ -1,8 +1,23 @@
-"""Domain event -> workflow dispatch.
+"""Domain event dispatcher and workflow execution trigger.
 
-Services emit events (`learner.created`, `ticket.created`, ...); this finds the enabled
-workflows subscribed to that event, creates one execution each and queues the actual run on
-the worker. Nothing blocking happens in the request path.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file implements the internal **Event-Driven Architecture** of LearnFlow:
+1. `emit()`: Emits a domain event (e.g. `learner.created`, `ticket.created`,
+   `evaluation.needs_review`, `schedule.daily`).
+2. Persists the `AutomationEvent` to PostgreSQL.
+3. Queries for all active `Workflow` rows subscribed to that event in the tenant.
+4. Creates an idempotent `WorkflowExecution` row for each matching workflow.
+5. Enqueues a background job (`run_workflow`) via `services.jobs.enqueue()`.
+
+===============================================================================
+WHY ASYNCHRONOUS EVENT DISPATCH?
+===============================================================================
+When a user registers or submits an assessment, we must NOT block the HTTP request
+waiting for external email sends, n8n webhook HTTP handshakes, or LLM summarizations.
+`events.emit()` creates database records in milliseconds and delegates the execution
+to background workers, guaranteeing sub-50ms API response times.
 """
 
 from __future__ import annotations
@@ -31,10 +46,25 @@ async def emit(
     course_id: uuid.UUID | None = None,
     idempotency_key: str | None = None,
 ) -> list[uuid.UUID]:
+    """Emits a domain event and triggers all matching subscriber workflows.
+
+    Execution Flow:
+    1. Saves `AutomationEvent` to the database.
+    2. Selects all `Workflow` records matching `organization_id`, `trigger_event == name`,
+       and `is_enabled == True`.
+    3. Calls `create_execution()` to instantiate the workflow run.
+    4. Enqueues `run_workflow` task into ARQ worker queue.
+    5. Marks the event as dispatched.
+
+    Returns:
+        list[uuid.UUID]: List of created `WorkflowExecution` IDs.
+    """
+    # 1. Record event row in database
     event = AutomationEvent(organization_id=organization_id, name=name, payload=payload)
     session.add(event)
     await session.flush()
 
+    # 2. Find enabled subscriber workflows
     workflows = list(
         (
             await session.execute(
@@ -49,6 +79,7 @@ async def emit(
         .all()
     )
 
+    # 3. Create executions and enqueue worker jobs
     execution_ids: list[uuid.UUID] = []
     for workflow in workflows:
         execution, created = await create_execution(
@@ -63,6 +94,7 @@ async def emit(
         )
         execution_ids.append(execution.id)
         if created:
+            # Enqueue async job to be claimed by ARQ worker
             await jobs.enqueue(
                 session,
                 organization_id,
@@ -74,9 +106,9 @@ async def emit(
                 execution_id=str(execution.id),
             )
 
+    # 4. Mark event dispatched and return execution IDs
     event.dispatched = True
     event.execution_ids = [str(i) for i in execution_ids]
     await session.flush()
-    # `event` is structlog's reserved key for the message itself — use event_name here.
     log.info("event_emitted", event_name=name, workflows=len(workflows))
     return execution_ids

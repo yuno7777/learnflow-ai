@@ -1,4 +1,22 @@
-"""Maps a provider name from config/DB to a concrete adapter instance."""
+"""Provider factory and adapter instance registry.
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file implements the **Factory Pattern** for language models and embedding clients:
+1. `get_llm(provider)`: Resolves a provider string ("mock", "openai", "azure_openai",
+   "ollama", "huggingface") to a cached concrete `LLMProvider` adapter instance.
+2. `get_embedder(provider)`: Resolves an embedding provider string to a cached
+   `EmbeddingProvider` instance.
+3. `reset_providers()`: Clears the `@lru_cache` so test suites can dynamically
+   switch providers between test cases.
+
+===============================================================================
+HOW IT CONNECTS TO THE REST OF THE PROJECT:
+===============================================================================
+- `ai/gateway.py`: Calls `get_llm(provider_name)` during completion calls and
+  `get_embedder()` during embedding generation.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +31,15 @@ from .openai_provider import OpenAICompatibleEmbeddings, OpenAICompatibleLLM
 
 @lru_cache(maxsize=8)
 def get_llm(provider: str | None = None) -> LLMProvider:
+    """Factory creating or returning the cached LLMProvider instance.
+
+    Supported Providers:
+    - `mock`: In-memory offline synthesizer (`MockLLM`).
+    - `openai`: Standard OpenAI client (`OpenAICompatibleLLM`).
+    - `azure_openai`: Azure OpenAI deployment client.
+    - `huggingface`: Hugging Face TGI / vLLM endpoint.
+    - `ollama`: Local Ollama instance (`OllamaLLM`).
+    """
     name = (provider or settings.llm_provider).lower()
     if name == "mock":
         return MockLLM()
@@ -35,6 +62,15 @@ def get_llm(provider: str | None = None) -> LLMProvider:
 
 @lru_cache(maxsize=8)
 def get_embedder(provider: str | None = None) -> EmbeddingProvider:
+    """Factory creating or returning the cached EmbeddingProvider instance.
+
+    Supported Providers:
+    - `mock`: Hashed bag-of-words embedder (`MockEmbeddings`).
+    - `openai`: `OpenAICompatibleEmbeddings` with `text-embedding-3-small`.
+    - `azure_openai`: Azure OpenAI embeddings deployment.
+    - `huggingface`: TEI (Text Embeddings Inference) or vLLM embedding server.
+    - `ollama`: `OllamaEmbeddings` with local embedding model.
+    """
     name = (provider or settings.embedding_provider).lower()
     if name == "mock":
         return MockEmbeddings()
@@ -54,6 +90,6 @@ def get_embedder(provider: str | None = None) -> EmbeddingProvider:
 
 
 def reset_providers() -> None:
-    """Tests flip settings between cases; the lru_cache has to follow."""
+    """Clears the LRU cache. Used during unit tests when switching environment configs."""
     get_llm.cache_clear()
     get_embedder.cache_clear()

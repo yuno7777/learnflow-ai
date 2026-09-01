@@ -1,8 +1,29 @@
-"""The single choke point for every model call in the platform.
+"""Central AI Gateway: Single choke point for all LLM and embedding operations.
 
-Nothing else in the codebase talks to a provider directly. That buys us, in one place:
-retries with backoff, provider fallback, structured-output validation with one repair
-attempt, token accounting, cost estimation and an observability row per attempt.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file is the single gateway through which ALL language model completions and
+vector embedding requests must pass. It encapsulates:
+1. Automated Retries with Exponential Backoff: Catches rate limits and transient 5xx errors.
+2. Provider Fallback Chain: Falls back (e.g. OpenAI -> Local Ollama) if the primary fails.
+3. Structured Output Validation & Self-Repair: Automatically parses JSON into Pydantic models.
+   If validation fails, fires an automated zero-temperature repair prompt back to the model.
+4. Granular Telemetry & Cost Accounting: Writes an `LLMCall` row for every single attempt,
+   recording latency in ms, prompt/completion tokens, prompt version, and estimated USD cost.
+5. Workflow Attribution: Links LLM calls to active `WorkflowExecution` IDs for billing audits.
+
+===============================================================================
+DATA FLOW OF AN AI CALL:
+===============================================================================
+Caller (e.g. Course Generator)
+  ──► `gateway.complete(operation="course_generate", messages, schema=GeneratedCourse)`
+  ──► Checks provider chain (`[primary, fallback]`)
+  ──► Executes attempt via provider adapter (`openai_provider.py` or `mock_provider.py`)
+  ──► Extracts JSON and validates against Pydantic schema
+  ──► (If invalid) Fires self-repair prompt with `temperature=0.0`
+  ──► Inserts `LLMCall` and `UsageRecord` rows into PostgreSQL
+  ──► Returns `AIResult(text, parsed, cost_usd, latency_ms)`
 """
 
 from __future__ import annotations
@@ -31,11 +52,16 @@ from .registry import get_embedder, get_llm
 log = get_logger(__name__)
 M = TypeVar("M", bound=BaseModel)
 
+# Regex to extract JSON content even if wrapped in markdown code fences (```json ... ```)
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
 @dataclass(slots=True)
 class AIResult:
+    """Unified return type from `AIGateway.complete()`.
+
+    Contains raw text, parsed Pydantic object, token metrics, latency, and telemetry ID.
+    """
     text: str
     parsed: Any | None
     model: str
@@ -51,7 +77,11 @@ class AIResult:
 
 
 def _extract_json(text: str) -> str:
-    """Models wrap JSON in prose or fences more often than they admit."""
+    """Extracts raw JSON substring from model output.
+
+    Handles models wrapping JSON inside markdown fences (```json ... ```)
+    or preambles like 'Here is the JSON: {...}'.
+    """
     fenced = _JSON_BLOCK.search(text)
     if fenced:
         return fenced.group(1).strip()
@@ -62,6 +92,8 @@ def _extract_json(text: str) -> str:
 
 
 class AIGateway:
+    """Central gateway orchestrating LLM calls, retries, fallbacks, and observability."""
+
     def __init__(
         self,
         session: AsyncSession,
@@ -74,10 +106,12 @@ class AIGateway:
         self.organization_id = organization_id
         self.user_id = user_id
         self.request_id = request_id
-        # Set by the workflow engine so every call made during a run is attributable to it.
+        # Explicit workflow link: set by automation engine to attribute spend to specific executions
         self.workflow_execution_id: uuid.UUID | None = None
 
-    # ------------------------------------------------------------------ public
+    # -------------------------------------------------------------------------
+    # Public Completion API
+    # -------------------------------------------------------------------------
     async def complete(
         self,
         operation: str,
@@ -92,6 +126,23 @@ class AIGateway:
         tools: list[dict[str, Any]] | None = None,
         retrieved_chunk_ids: list[str] | None = None,
     ) -> AIResult:
+        """Executes a chat completion with retries, fallback provider failover, and Pydantic validation.
+
+        Args:
+            operation: Audit label (e.g. "rag_answer", "course_generate", "assessment_evaluate").
+            messages: List of `ChatMessage` objects representing system/user/assistant context.
+            prompt: Optional versioned `Prompt` dataclass for audit tracking.
+            schema: Optional Pydantic `BaseModel` class to enforce structured JSON output.
+            model: Optional model override (defaults to `settings.llm_model`).
+            provider: Optional provider override (defaults to `settings.llm_provider`).
+            temperature: Sampling temperature (0.0 to 1.0).
+            max_tokens: Max tokens to generate.
+            tools: Function calling definitions for assistant tools.
+            retrieved_chunk_ids: Vector chunk IDs included in prompt context (for RAG citations).
+
+        Returns:
+            AIResult: Normalized result containing text, parsed object, tokens, cost, and latency.
+        """
         model = model or settings.llm_model
         json_schema = schema.model_json_schema() if schema else None
         started = time.perf_counter()
@@ -100,8 +151,11 @@ class AIGateway:
         schema_failed = False
         last_error: Exception | None = None
 
+        # 1. Iterate through provider chain (Primary -> Fallback)
         for provider_name in self._provider_chain(provider):
             used_fallback = provider_name != (provider or settings.llm_provider)
+            
+            # 2. Retry loop with exponential backoff
             for attempt in range(settings.llm_max_retries):
                 attempts += 1
                 try:
@@ -114,6 +168,8 @@ class AIGateway:
                         json_schema=json_schema,
                         tools=tools,
                     )
+                    
+                    # 3. Pydantic validation & self-repair pass
                     parsed = None
                     if schema is not None:
                         parsed, repaired = await self._parse_or_repair(
@@ -122,6 +178,8 @@ class AIGateway:
                         schema_failed = repaired
                         if repaired:
                             attempts += 1
+
+                    # 4. Record successful telemetry and return
                     return await self._record(
                         operation=operation,
                         completion=completion,
@@ -141,10 +199,12 @@ class AIGateway:
                 except (ProviderUnavailable, ValidationError, ValueError) as exc:
                     last_error = exc
                     if isinstance(exc, ValueError) and not isinstance(exc, ProviderUnavailable):
-                        break  # 4xx / unparseable-after-repair: another attempt won't help
+                        # Client input error or unrepairable schema: retrying won't help
+                        break
                     await asyncio.sleep(0.25 * (2**attempt))
             log.warning("llm_provider_exhausted", provider=provider_name, operation=operation)
 
+        # 5. All providers and retries failed: log error and raise ProviderError (502)
         await self._record(
             operation=operation,
             completion=Completion(text="", model=model, provider=provider or settings.llm_provider),
@@ -163,9 +223,17 @@ class AIGateway:
             {"reason": str(last_error)[:300]},
         )
 
+    # -------------------------------------------------------------------------
+    # Public Embedding API
+    # -------------------------------------------------------------------------
     async def embed(
         self, texts: list[str], *, operation: str = "embed"
     ) -> tuple[list[list[float]], int]:
+        """Generates dense vector embeddings for a list of text passages.
+
+        Returns:
+            tuple[list[list[float]], int]: (list_of_vectors, total_input_tokens)
+        """
         embedder = get_embedder()
         model = settings.embedding_model if embedder.name != "mock" else "mock-embed"
         started = time.perf_counter()
@@ -175,6 +243,8 @@ class AIGateway:
             try:
                 result = await embedder.embed(texts, model=model)
                 cost = estimate_cost(result.model, result.input_tokens, 0)
+                
+                # Write billing usage record
                 self.session.add(
                     UsageRecord(
                         organization_id=self.organization_id,
@@ -200,8 +270,11 @@ class AIGateway:
                 await asyncio.sleep(0.25 * (2**attempt))
         raise ProviderError("Embedding failed", {"reason": str(last_error)[:300]})
 
-    # ------------------------------------------------------------------ internals
+    # -------------------------------------------------------------------------
+    # Internal Helpers
+    # -------------------------------------------------------------------------
     def _provider_chain(self, provider: str | None) -> list[str]:
+        """Builds ordered provider failover sequence (e.g. `['openai', 'ollama']`)."""
         chain = [provider or settings.llm_provider]
         if settings.llm_fallback_provider and settings.llm_fallback_provider not in chain:
             chain.append(settings.llm_fallback_provider)
@@ -217,11 +290,17 @@ class AIGateway:
         temperature: float,
         max_tokens: int,
     ) -> tuple[M, bool]:
+        """Attempts to validate model output against Pydantic schema; repairs if invalid.
+
+        If the initial output fails validation, appends the invalid output and an error
+        instruction to the conversation and requests a repair with `temperature=0.0`.
+        """
         try:
             return schema.model_validate_json(_extract_json(completion.text)), False
         except (ValidationError, json.JSONDecodeError) as exc:
             log.warning("structured_output_invalid", schema=schema.__name__, error=str(exc)[:300])
 
+        # Self-Repair Prompt: Force model to output valid JSON without pleasantries
         repair = [
             *messages,
             ChatMessage(role="assistant", content=completion.text[:4000]),
@@ -243,7 +322,7 @@ class AIGateway:
         completion.input_tokens += retry.input_tokens
         completion.output_tokens += retry.output_tokens
         completion.text = retry.text
-        # A second failure raises ValidationError, which the caller treats as terminal.
+        # If second attempt fails, raises ValidationError terminating the attempt
         return schema.model_validate_json(_extract_json(retry.text)), True
 
     async def _record(
@@ -261,6 +340,7 @@ class AIGateway:
         success: bool,
         error: str | None,
     ) -> AIResult:
+        """Persists granular telemetry to `llm_calls` and rolled-up spend to `usage_records`."""
         latency_ms = int((time.perf_counter() - started) * 1000)
         cost = estimate_cost(completion.model, completion.input_tokens, completion.output_tokens)
         call = LLMCall(

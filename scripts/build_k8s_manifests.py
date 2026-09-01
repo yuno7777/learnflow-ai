@@ -1,9 +1,33 @@
-"""Generates infrastructure/kubernetes/*.yaml.
+"""Build script generating production Kubernetes declarative manifests in `infrastructure/kubernetes/`.
 
-The nine manifests share a lot of boilerplate (labels, probes, env-from, resources). Writing
-them from one description keeps that consistent instead of nine files drifting apart.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This script produces the complete production-grade Kubernetes topology:
+1. Declarative Consistency:
+   - Eliminates copy-paste configuration drift across 9 manifest files.
+   - Injects standardized CPU/Memory resource limits, readiness/liveness probes,
+     and shared `learnflow-config` / `learnflow-secrets` environment maps.
+2. Architecture Topology:
+   - `00-namespace.yaml`: Tenant namespace isolation (`learnflow`).
+   - `01-config.yaml` & `02-secrets.example.yaml`: Production configs and secrets blueprint.
+   - `10-postgres.yaml`: PostgreSQL 16 StatefulSet with dedicated 10Gi PVC storage.
+   - `11-redis.yaml` & `12-chromadb.yaml`: State deployments with persistent volumes.
+   - `20-api.yaml`: FastAPI Deployment (2 replicas), `ReadWriteMany` uploads PVC,
+     and an `initContainer` that blocks startup until the `learnflow-migrate` Alembic Job completes.
+   - `21-worker.yaml`: ARQ background worker deployment mounted to shared uploads storage.
+   - `22-web.yaml`: Next.js frontend deployment.
+   - `23-n8n.yaml`: n8n automation engine container.
+   - `30-ingress.yaml`: NGINX Ingress controller configuration:
+     - `proxy-body-size: 32m`: Allows document uploads up to 32MB.
+     - `proxy-buffering: off`: Critical for real-time Server-Sent Events (SSE) streaming.
+   - `kustomization.yaml`: Master Kustomize bundle.
 
-Run: python scripts/build_k8s_manifests.py
+===============================================================================
+RUNNING THIS SCRIPT:
+===============================================================================
+`python scripts/build_k8s_manifests.py`
+Generates all manifest files in `infrastructure/kubernetes/`.
 """
 
 from __future__ import annotations
@@ -33,12 +57,14 @@ RESOURCES = """          resources:
 
 
 def write(name: str, body: str) -> None:
+    """Writes formatted YAML content with warning header."""
     OUT.mkdir(parents=True, exist_ok=True)
     (OUT / name).write_text(HEADER + body.lstrip("\n"), encoding="utf-8")
     print("wrote", name)
 
 
 def namespace() -> None:
+    """Generates the Kubernetes namespace manifest."""
     write(
         "00-namespace.yaml",
         f"""
@@ -53,6 +79,7 @@ metadata:
 
 
 def config() -> None:
+    """Generates the primary application ConfigMap manifest."""
     write(
         "01-config.yaml",
         f"""
@@ -68,7 +95,6 @@ data:
   CHROMA_HOST: "chromadb"
   CHROMA_PORT: "8000"
   UPLOAD_DIR: "/data/uploads"
-  # Start on the offline provider; switch to openai and supply OPENAI_API_KEY in the Secret.
   LLM_PROVIDER: "mock"
   LLM_MODEL: "gpt-4o-mini"
   EMBEDDING_PROVIDER: "mock"
@@ -82,10 +108,11 @@ data:
 
 
 def secrets_example() -> None:
+    """Generates example secrets template (never committed with live keys)."""
     write(
         "02-secrets.example.yaml",
         f"""
-# EXAMPLE ONLY — do not apply. Create the real Secret out of band:
+# EXAMPLE ONLY — do not apply directly. Create Secret using kubectl or sealed-secrets:
 #
 #   kubectl -n {NS} create secret generic learnflow-secrets \\
 #     --from-literal=JWT_SECRET="$(openssl rand -hex 32)" \\
@@ -110,6 +137,7 @@ stringData:
 
 
 def postgres() -> None:
+    """Generates PostgreSQL StatefulSet with persistent storage volume."""
     write(
         "10-postgres.yaml",
         f"""
@@ -194,6 +222,7 @@ def simple_service(
     extra_env: str = "",
     command: str = "",
 ) -> str:
+    """Helper generating deployment + service + PVC for simple stateful containers."""
     return f"""
 apiVersion: v1
 kind: Service
@@ -251,6 +280,7 @@ spec:
 
 
 def redis() -> None:
+    """Generates Redis Deployment with append-only persistence."""
     probe = """          readinessProbe:
             exec:
               command: ["redis-cli", "ping"]
@@ -265,6 +295,7 @@ def redis() -> None:
 
 
 def chromadb() -> None:
+    """Generates ChromaDB vector database deployment."""
     probe = """          readinessProbe:
             httpGet:
               path: /api/v1/heartbeat
@@ -287,6 +318,7 @@ def chromadb() -> None:
 
 
 def api() -> None:
+    """Generates FastAPI Deployment, shared RWX uploads PVC, and Alembic DB migration Job."""
     write(
         "20-api.yaml",
         f"""
@@ -296,7 +328,7 @@ metadata:
   name: learnflow-uploads
   namespace: {NS}
 spec:
-  # RWX so the API (which writes uploads) and the worker (which reads them) can share it.
+  # ReadWriteMany allows the API (uploader) and workers (extractors) to share the file volume
   accessModes: ["ReadWriteMany"]
   resources:
     requests:
@@ -348,7 +380,7 @@ spec:
         app: api
     spec:
       initContainers:
-        # Do not serve traffic against an un-migrated schema.
+        # Blocks API traffic until database migration job completes successfully
         - name: wait-for-migration
           image: bitnami/kubectl:latest
           command:
@@ -384,6 +416,7 @@ spec:
 
 
 def worker() -> None:
+    """Generates ARQ background worker deployment."""
     write(
         "21-worker.yaml",
         f"""
@@ -418,6 +451,7 @@ spec:
 
 
 def web() -> None:
+    """Generates Next.js frontend deployment."""
     write(
         "22-web.yaml",
         f"""
@@ -471,6 +505,7 @@ spec:
 
 
 def n8n() -> None:
+    """Generates n8n workflow engine deployment."""
     probe = """          readinessProbe:
             httpGet:
               path: /healthz
@@ -507,6 +542,7 @@ def n8n() -> None:
 
 
 def ingress() -> None:
+    """Generates NGINX Ingress manifest with SSE buffer disabling."""
     write(
         "30-ingress.yaml",
         f"""
@@ -517,15 +553,11 @@ metadata:
   namespace: {NS}
   annotations:
     nginx.ingress.kubernetes.io/proxy-body-size: "32m"
-    # SSE needs buffering off, or execution updates arrive only when the buffer flushes.
+    # SSE streaming requires disabling proxy buffering so events are flushed immediately
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
-    # cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   ingressClassName: nginx
-  # tls:
-  #   - hosts: [learnflow.example.com]
-  #     secretName: learnflow-tls
   rules:
     - host: learnflow.example.com
       http:
@@ -556,6 +588,7 @@ spec:
 
 
 def kustomization() -> None:
+    """Generates master Kustomize definition."""
     write(
         "kustomization.yaml",
         f"""
@@ -575,7 +608,6 @@ resources:
   - 22-web.yaml
   - 23-n8n.yaml
   - 30-ingress.yaml
-# 02-secrets.example.yaml is deliberately excluded — create the Secret out of band.
 """,
     )
 

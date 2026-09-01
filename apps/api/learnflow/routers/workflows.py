@@ -1,4 +1,27 @@
-"""Workflow definitions, manual triggers, execution history and live run streaming."""
+"""Workflow definitions, manual triggering, execution history, and live step streaming router.
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file manages automation workflows and their runtime execution history:
+1. `GET /workflows/templates`: Returns built-in workflow template definitions
+   (`learner_onboarding`, `inactive_reminder`, `ticket_triage`, `weekly_summary`).
+2. `POST /workflows`: Provisions a new workflow instance from a template with custom config.
+3. `POST /workflows/{id}/trigger`: Manually triggers a workflow execution, assigning an
+   idempotency key and dispatching the `run_workflow` background job.
+4. `GET /executions`: Lists paginated execution records with workflow names and status.
+5. `GET /executions/{id}`: Returns complete execution trace with every recorded `WorkflowStep`.
+6. `POST /executions/{id}/retry`: Re-queues a failed execution with an incremented `retry_count`.
+7. `GET /executions/{id}/stream`: Real-time Server-Sent Events (SSE) streaming of live step transitions
+   published over Redis channel `learnflow:execution:{id}`.
+
+===============================================================================
+HOW IT CONNECTS TO THE REST OF THE PROJECT:
+===============================================================================
+- `automation/engine.py`: Executes workflow runs and publishes step updates.
+- `automation/runners.py`: Built-in Python handlers.
+- `automation/n8n_client.py`: Outbound webhook dispatcher.
+"""
 
 from __future__ import annotations
 
@@ -32,13 +55,19 @@ executions_router = APIRouter(prefix="/executions", tags=["workflows"])
 TERMINAL = {ExecutionStatus.succeeded, ExecutionStatus.failed, ExecutionStatus.cancelled}
 
 
+# -----------------------------------------------------------------------------
+# Workflow Definition Endpoints
+# -----------------------------------------------------------------------------
+
 @router.get("/templates", summary="Available workflow templates")
 async def templates() -> dict[str, dict]:
+    """Returns available automation workflow template definitions and configurations."""
     return TEMPLATES
 
 
 @router.get("", response_model=list[WorkflowOut], summary="List workflows")
 async def list_workflows(repo: RepoDep) -> list[Workflow]:
+    """Lists all configured workflows in the current tenant."""
     items, _ = await repo.list(Workflow, sort="created_at", limit=100)
     return items
 
@@ -57,6 +86,7 @@ async def create_workflow(
     principal: PrincipalDep,
     request: Request,
 ) -> Workflow:
+    """Creates a new workflow instance from a template definition."""
     if body.template not in TEMPLATES:
         raise Conflict("Unknown template", {"available": sorted(TEMPLATES)})
     existing = await session.scalar(repo.select(Workflow).where(Workflow.key == body.key))
@@ -77,6 +107,7 @@ async def create_workflow(
 
 @router.get("/{workflow_id}", response_model=WorkflowOut, summary="Workflow detail")
 async def get_workflow(workflow_id: uuid.UUID, repo: RepoDep) -> Workflow:
+    """Returns workflow metadata, trigger configuration, and n8n webhook settings."""
     return await repo.get(Workflow, workflow_id)
 
 
@@ -87,6 +118,7 @@ async def get_workflow(workflow_id: uuid.UUID, repo: RepoDep) -> Workflow:
     summary="Update a workflow",
 )
 async def update_workflow(workflow_id: uuid.UUID, body: WorkflowUpdate, repo: RepoDep) -> Workflow:
+    """Updates workflow parameters, active status, or retry counts."""
     workflow = await repo.get(Workflow, workflow_id)
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(workflow, field, value)
@@ -109,6 +141,7 @@ async def trigger(
     principal: PrincipalDep,
     request: Request,
 ) -> WorkflowExecution:
+    """Manually triggers an immediate execution of a workflow."""
     workflow = await repo.get(Workflow, workflow_id)
     if not workflow.is_enabled:
         raise Conflict("Workflow is disabled")
@@ -146,7 +179,10 @@ async def trigger(
     return execution
 
 
-# ------------------------------------------------------------------ executions
+# -----------------------------------------------------------------------------
+# Execution History & Streaming Endpoints
+# -----------------------------------------------------------------------------
+
 @executions_router.get("", response_model=dict, summary="List workflow executions")
 async def list_executions(
     repo: RepoDep,
@@ -156,6 +192,7 @@ async def list_executions(
     workflow_id: uuid.UUID | None = Query(None),
     execution_status: ExecutionStatus | None = Query(None, alias="status"),
 ) -> dict:
+    """Lists workflow execution runs with pagination and status filters."""
     where = []
     if workflow_id:
         where.append(WorkflowExecution.workflow_id == workflow_id)
@@ -188,6 +225,7 @@ async def list_executions(
 async def get_execution(
     execution_id: uuid.UUID, repo: RepoDep, session: SessionDep
 ) -> ExecutionDetail:
+    """Returns execution trace including individual step outputs, durations, and LLM token costs."""
     execution = await repo.get(WorkflowExecution, execution_id)
     workflow = await repo.get(Workflow, execution.workflow_id)
     steps = (
@@ -222,6 +260,7 @@ async def retry_execution(
     principal: PrincipalDep,
     request: Request,
 ) -> WorkflowExecution:
+    """Manually re-enqueues a failed or cancelled workflow run with an incremented attempt count."""
     execution = await repo.get(WorkflowExecution, execution_id)
     if execution.status not in (ExecutionStatus.failed, ExecutionStatus.cancelled):
         raise Conflict("Only failed or cancelled executions can be retried")
@@ -257,6 +296,7 @@ async def retry_execution(
     response_class=EventSourceResponse,
 )
 async def stream_execution(execution_id: uuid.UUID, repo: RepoDep, session: SessionDep):
+    """Streams live step progress events of an ongoing execution using SSE over Redis Pub/Sub."""
     execution = await repo.get(WorkflowExecution, execution_id)
 
     async def publisher():
@@ -282,7 +322,6 @@ async def stream_execution(execution_id: uuid.UUID, repo: RepoDep, session: Sess
             ),
         }
         if execution.status in TERMINAL or not redis_enabled():
-            # Without Redis there is nothing to subscribe to; the client falls back to polling.
             yield {"event": "done", "data": json.dumps({"status": execution.status.value})}
             return
 
@@ -311,7 +350,3 @@ async def stream_execution(execution_id: uuid.UUID, repo: RepoDep, session: Sess
             await pubsub.aclose()
 
     return EventSourceResponse(publisher())
-
-
-# Per-workflow success rates live on the analytics router (/analytics/workflows) so they do
-# not collide with the /executions/{execution_id} path parameter.

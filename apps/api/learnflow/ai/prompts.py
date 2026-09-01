@@ -1,8 +1,25 @@
-"""Versioned prompt registry.
+"""Versioned prompt template registry.
 
-Prompts live in code (reviewable, diffable) and are seeded into `prompt_templates` so an
-org can override them later. The version number is written onto every LLM call row, so any
-historical output can be traced back to the exact text that produced it.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file serves as the code-first registry for all system prompts used across LearnFlow:
+1. `Prompt`: An immutable dataclass holding `name`, `version`, `system`, and `user` templates.
+2. Versioned Prompts:
+   - `RAG_ANSWER` (v3): Strict grounding rules with mandatory `[n]` citation requirements.
+   - `COURSE_OUTLINE` (v2): Curriculum generation grounded in source material.
+   - `QUIZ_GENERATE` (v2): Assessment item generation with confidence reporting.
+   - `ANSWER_EVALUATE` (v3): Strict rubric evaluation instructing LLM to report honest confidence.
+   - `TICKET_TRIAGE` (v2): Helpdesk classification, urgency detection, and escalation triggers.
+   - `LEARNER_ASSISTANT` (v2): Tool-using agent prompt for student chat.
+3. `ALL_PROMPTS`: Complete dictionary mapping prompt name to `Prompt` object.
+
+===============================================================================
+WHY PROMPT VERSIONING IN CODE?
+===============================================================================
+When models generate courses, quizzes, or grades, `prompt.name` and `prompt.version`
+are stored directly in the database (`courses`, `assessments`, `evaluations`, `llm_calls`).
+This allows engineers to track changes over time and reproduce any generated artifact.
 """
 
 from __future__ import annotations
@@ -12,15 +29,22 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class Prompt:
+    """Immutable versioned prompt definition."""
     name: str
     version: int
     system: str
     user: str
 
     def render(self, **kwargs: str) -> tuple[str, str]:
+        """Renders the user template by substituting provided keyword arguments."""
         return self.system, self.user.format(**kwargs)
 
 
+# -----------------------------------------------------------------------------
+# Core Prompts
+# -----------------------------------------------------------------------------
+
+# 1. RAG Answer Generation
 RAG_ANSWER = Prompt(
     name="rag_answer",
     version=3,
@@ -40,6 +64,7 @@ RAG_ANSWER = Prompt(
     ),
 )
 
+# 2. Course & Curriculum Generation
 COURSE_OUTLINE = Prompt(
     name="course_outline",
     version=2,
@@ -55,6 +80,7 @@ COURSE_OUTLINE = Prompt(
     ),
 )
 
+# 3. Assessment & Quiz Generation
 QUIZ_GENERATE = Prompt(
     name="quiz_generate",
     version=2,
@@ -71,6 +97,7 @@ QUIZ_GENERATE = Prompt(
     ),
 )
 
+# 4. Subjective Answer Auto-Grading & Rubric Evaluation
 ANSWER_EVALUATE = Prompt(
     name="answer_evaluate",
     version=3,
@@ -87,6 +114,7 @@ ANSWER_EVALUATE = Prompt(
     ),
 )
 
+# 5. Support Ticket Triage & Auto-Response
 TICKET_TRIAGE = Prompt(
     name="ticket_triage",
     version=2,
@@ -103,6 +131,7 @@ TICKET_TRIAGE = Prompt(
     ),
 )
 
+# 6. Document Content Transformation (Flashcards, FAQs, Summaries)
 CONTENT_TRANSFORM = Prompt(
     name="content_transform",
     version=1,
@@ -113,6 +142,7 @@ CONTENT_TRANSFORM = Prompt(
     user="SOURCE MATERIAL:\n{context}\n\nProduce: {output_type}\n{instructions}",
 )
 
+# 7. Learner Onboarding Welcome Message
 WELCOME_MESSAGE = Prompt(
     name="welcome_message",
     version=1,
@@ -126,6 +156,7 @@ WELCOME_MESSAGE = Prompt(
     ),
 )
 
+# 8. Inactive Learner Re-engagement Nudge
 REMINDER_MESSAGE = Prompt(
     name="reminder_message",
     version=1,
@@ -141,6 +172,7 @@ REMINDER_MESSAGE = Prompt(
     ),
 )
 
+# 9. Interactive Learner Study Assistant
 LEARNER_ASSISTANT = Prompt(
     name="learner_assistant",
     version=2,
@@ -155,6 +187,7 @@ LEARNER_ASSISTANT = Prompt(
     user="{question}",
 )
 
+# Complete registry of all prompt definitions
 ALL_PROMPTS: dict[str, Prompt] = {
     p.name: p
     for p in (

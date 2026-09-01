@@ -1,9 +1,23 @@
-"""Vector store abstraction with a ChromaDB implementation.
+"""Vector store abstraction and ChromaDB multi-tenant client.
 
-Tenant isolation is by **collection**, not by metadata filter: `org_<uuid.hex>`. A forgotten
-`where` clause on a shared collection leaks other tenants' documents; a wrong collection name
-simply returns nothing. Pinecone/Weaviate adapters implement the same three methods
-(namespace / class per org respectively).
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file manages vector storage and similarity search for RAG retrieval:
+1. `VectorRecord` & `Match`: Standard vector payload and search match dataclasses.
+2. `VectorStore`: Abstract protocol defining `upsert`, `query`, `delete`, and `count`.
+3. `ChromaVectorStore`: Production ChromaDB client supporting HTTP and local persistent modes.
+4. `InMemoryVectorStore`: Pure Python in-memory vector store with direct cosine math for tests.
+5. `collection_name(organization_id)`: Formats tenant collection names (`org_<uuid.hex>`).
+
+===============================================================================
+CRITICAL MULTI-TENANT DESIGN DECISION (Collection Isolation):
+===============================================================================
+Tenant isolation is enforced at the **collection level**, NOT via metadata filtering.
+- Why? In a shared vector collection, if a developer forgets a `where={"org_id": ...}`
+  filter in a query, the search accidentally leaks another tenant's proprietary documents.
+- In collection-per-tenant isolation, querying with the wrong organization ID opens an
+  isolated collection that simply has zero matching documents—failing closed.
 """
 
 from __future__ import annotations
@@ -22,21 +36,24 @@ log = get_logger(__name__)
 
 @dataclass(slots=True)
 class VectorRecord:
-    id: str
-    embedding: list[float]
-    text: str
-    metadata: dict[str, Any] = field(default_factory=dict)
+    """A document chunk embedding prepared for insertion into the vector database."""
+    id: str                        # Formatted as "{document_id}:{position}"
+    embedding: list[float]         # Dense vector (e.g. 1536 floats)
+    text: str                      # Raw text content of the chunk
+    metadata: dict[str, Any] = field(default_factory=dict)  # Document ID, page, section
 
 
 @dataclass(slots=True)
 class Match:
+    """A similarity search result returned by the vector store."""
     id: str
     text: str
-    score: float  # cosine similarity in [0, 1]; higher is better
+    score: float                   # Normalized cosine similarity score in [0.0, 1.0] (1.0 = identical)
     metadata: dict[str, Any]
 
 
 class VectorStore(Protocol):
+    """Abstract protocol for vector datastores (ChromaDB, Pinecone, Qdrant, In-Memory)."""
     async def upsert(self, organization_id: uuid.UUID, records: list[VectorRecord]) -> None: ...
 
     async def query(
@@ -60,11 +77,12 @@ class VectorStore(Protocol):
 
 
 def collection_name(organization_id: uuid.UUID) -> str:
+    """Generates the isolated ChromaDB collection identifier for a tenant (e.g. `org_9a4f21...`)."""
     return f"org_{organization_id.hex}"
 
 
 def _chroma_where(where: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Chroma needs an explicit $and for multi-key filters and $in for lists."""
+    """Translates standard python dict filters into ChromaDB's `$and` / `$in` filter syntax."""
     if not where:
         return None
     clauses = [
@@ -75,10 +93,13 @@ def _chroma_where(where: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 class ChromaVectorStore:
+    """ChromaDB implementation of `VectorStore`."""
+
     def __init__(self) -> None:
         self._client = None
 
     def _get_client(self):
+        """Initializes ChromaDB HTTP client (in prod) or PersistentClient (in local/CLI)."""
         if self._client is None:
             import chromadb
 
@@ -91,11 +112,13 @@ class ChromaVectorStore:
         return self._client
 
     def _collection(self, organization_id: uuid.UUID):
+        """Retrieves or creates the organization's dedicated HNSW cosine collection."""
         return self._get_client().get_or_create_collection(
             name=collection_name(organization_id), metadata={"hnsw:space": "cosine"}
         )
 
     async def upsert(self, organization_id: uuid.UUID, records: list[VectorRecord]) -> None:
+        """Upserts embedding vectors and metadata in ChromaDB (runs in background thread)."""
         if not records:
             return
 
@@ -117,6 +140,7 @@ class ChromaVectorStore:
         top_k: int,
         where: dict[str, Any] | None = None,
     ) -> list[Match]:
+        """Queries ChromaDB collection for nearest neighbors and normalizes distance to similarity."""
         def _run() -> Any:
             return self._collection(organization_id).query(
                 query_embeddings=[embedding],
@@ -134,7 +158,8 @@ class ChromaVectorStore:
             Match(
                 id=i,
                 text=d or "",
-                # Chroma returns cosine *distance*; clamp because float error can go slightly <0.
+                # Chroma returns cosine distance (0 = identical, 2 = opposite).
+                # Convert to similarity score in [0.0, 1.0]: score = 1.0 - distance
                 score=max(0.0, min(1.0, 1.0 - float(dist))),
                 metadata=meta or {},
             )
@@ -148,6 +173,7 @@ class ChromaVectorStore:
         ids: list[str] | None = None,
         where: dict[str, Any] | None = None,
     ) -> None:
+        """Deletes vectors from an organization's collection."""
         if not ids and not where:
             raise ValueError("Refusing to delete the entire collection without a filter")
 
@@ -157,11 +183,12 @@ class ChromaVectorStore:
         await asyncio.to_thread(_run)
 
     async def count(self, organization_id: uuid.UUID) -> int:
+        """Returns total vector count in the tenant's collection."""
         return await asyncio.to_thread(lambda: self._collection(organization_id).count())
 
 
 class InMemoryVectorStore:
-    """Used by unit tests. Same semantics, cosine similarity computed directly."""
+    """In-memory mock vector store used during automated unit tests."""
 
     def __init__(self) -> None:
         self._data: dict[str, dict[str, VectorRecord]] = {}
@@ -238,7 +265,7 @@ _override: VectorStore | None = None
 
 
 def set_vector_store(store: VectorStore | None) -> None:
-    """Tests swap in the in-memory store; production never calls this."""
+    """Sets a global override vector store instance (used during testing)."""
     global _override
     _override = store
     _default_store.cache_clear()
@@ -250,4 +277,5 @@ def _default_store() -> VectorStore:
 
 
 def get_vector_store() -> VectorStore:
+    """Returns the active vector store singleton."""
     return _override or _default_store()

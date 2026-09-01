@@ -1,4 +1,26 @@
-"""Conversations plus the AI observability tables (one row per LLM call)."""
+"""Conversations, prompt templates, and AI observability/billing models.
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file provides the data models for chat interactions, prompt versioning,
+and full AI observability:
+1. `Conversation` & `Message`: Chat threads for administrative RAG queries or
+   interactive learner assistant sessions, tracking tool calls and citations.
+2. `PromptTemplate`: Versioned prompt repository allowing historical prompt tracking.
+3. `ModelConfiguration`: Per-tenant LLM provider settings (temperature, max tokens).
+4. `LLMCall`: Granular telemetry row written for every model completion/embedding,
+   capturing tokens, latency, USD cost, retries, fallback usage, and workflow link.
+5. `UsageRecord`: Aggregate billing ledger indexed by timestamp for analytics dashboards.
+
+===============================================================================
+HOW IT CONNECTS TO THE REST OF THE PROJECT:
+===============================================================================
+- `ai/gateway.py`: Writes `LLMCall` and `UsageRecord` rows after every LLM operation.
+- `routers/assistant.py`: Appends user and assistant `Message` rows to `Conversation`.
+- `routers/analytics.py`: Queries `llm_calls` and `usage_records` to plot token spend
+  and cost graphs on the staff dashboard.
+"""
 
 from __future__ import annotations
 
@@ -23,11 +45,16 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import TenantEntity
 
 
+# -----------------------------------------------------------------------------
+# Chat & Assistant Conversation Models
+# -----------------------------------------------------------------------------
+
 class Conversation(TenantEntity):
+    """Chat session container between a user/learner and the AI assistant."""
     __tablename__ = "conversations"
 
     title: Mapped[str] = mapped_column(String(300), nullable=False)
-    kind: Mapped[str] = mapped_column(String(32), default="admin_rag", nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), default="admin_rag", nullable=False)  # "admin_rag" | "learner_assistant"
     knowledge_base_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("knowledge_bases.id", ondelete="SET NULL")
     )
@@ -47,12 +74,13 @@ class Conversation(TenantEntity):
 
 
 class Message(TenantEntity):
+    """An individual message within a conversation thread."""
     __tablename__ = "messages"
 
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    role: Mapped[str] = mapped_column(String(16), nullable=False)  # user|assistant|tool|system
+    role: Mapped[str] = mapped_column(String(16), nullable=False)  # "user" | "assistant" | "tool" | "system"
     content: Mapped[str] = mapped_column(Text, nullable=False)
     citations: Mapped[list[Any]] = mapped_column(default=list, nullable=False)
     tool_calls: Mapped[list[Any]] = mapped_column(default=list, nullable=False)
@@ -61,14 +89,17 @@ class Message(TenantEntity):
     llm_call_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("llm_calls.id", ondelete="SET NULL")
     )
-    feedback: Mapped[int | None] = mapped_column(Integer)  # -1 | 1
+    feedback: Mapped[int | None] = mapped_column(Integer)  # -1 (thumbs down) | 1 (thumbs up)
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
 
 
-class PromptTemplate(TenantEntity):
-    """Versioned prompt. Rendered text is stored on the LLM call so history stays reproducible."""
+# -----------------------------------------------------------------------------
+# Prompt Versioning & Model Config Models
+# -----------------------------------------------------------------------------
 
+class PromptTemplate(TenantEntity):
+    """Versioned prompt template ensuring full reproducibility of generated materials."""
     __tablename__ = "prompt_templates"
     __table_args__ = (UniqueConstraint("organization_id", "name", "version", name="uq_prompt_ver"),)
 
@@ -81,6 +112,7 @@ class PromptTemplate(TenantEntity):
 
 
 class ModelConfiguration(TenantEntity):
+    """Custom model routing settings for a tenant organization."""
     __tablename__ = "model_configurations"
 
     name: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -93,9 +125,15 @@ class ModelConfiguration(TenantEntity):
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
-class LLMCall(TenantEntity):
-    """One observability row per provider round-trip, including failed and fallback attempts."""
+# -----------------------------------------------------------------------------
+# Observability & Cost Accounting Models
+# -----------------------------------------------------------------------------
 
+class LLMCall(TenantEntity):
+    """Granular audit record created for EVERY single LLM or Embedding provider call.
+
+    Stores token counts, latency, USD spend, retries, and errors for observability.
+    """
     __tablename__ = "llm_calls"
 
     operation: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -118,8 +156,6 @@ class LLMCall(TenantEntity):
         Uuid, ForeignKey("users.id", ondelete="SET NULL")
     )
     request_id: Mapped[str | None] = mapped_column(String(64), index=True)
-    # True for rows written by the demo seed rather than by an actual model call, so the
-    # cost dashboard can tell fabricated history apart from real spend.
     is_demo_data: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
     workflow_execution_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("workflow_executions.id", ondelete="SET NULL"), index=True
@@ -127,11 +163,10 @@ class LLMCall(TenantEntity):
 
 
 class UsageRecord(TenantEntity):
-    """Rolled-up billing view. Written alongside every successful LLM/embedding call."""
-
+    """Aggregated billing ledger used for high-level cost dashboards and analytics."""
     __tablename__ = "usage_records"
 
-    kind: Mapped[str] = mapped_column(String(32), nullable=False)  # llm | embedding
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)  # "llm" | "embedding"
     provider: Mapped[str] = mapped_column(String(40), nullable=False)
     model: Mapped[str] = mapped_column(String(120), nullable=False)
     operation: Mapped[str] = mapped_column(String(64), nullable=False)

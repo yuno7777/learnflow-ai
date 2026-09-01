@@ -1,9 +1,25 @@
-"""AI assessment evaluation with a hard human-in-the-loop gate.
+"""AI-powered assessment evaluation service with Human-in-the-Loop (HITL) quality gates.
 
-Objective questions are scored deterministically in code — there is no reason to spend a
-model call on an exact-match answer. Only free-text answers go to the LLM, and a low
-confidence (or any objective/AI disagreement) forces `needs_review`; nothing below the
-threshold is ever presented as final.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file scores learner assessment submissions:
+1. Deterministic Python Grading: Objective questions (multiple-choice, true/false) and
+   blank submissions are scored strictly in Python code with 1.0 confidence and $0 AI cost.
+2. Subjective LLM Grading: Free-text answers (short-answer, scenario) are graded using
+   `ANSWER_EVALUATE` prompt with structured rubrics and temperature=0.0.
+3. Hard Human-in-the-Loop Gate (`CONFIDENCE_THRESHOLD = 0.75`):
+   - If the lowest question confidence is < 0.75, the evaluation is automatically flagged
+     with `requires_human_review = True` and status `needs_review`.
+   - Low-confidence grades are NEVER presented as final until approved by an instructor.
+4. Instructor Review Workflow (`review_evaluation`): Human reviewers can approve, reject,
+   or adjust scores with review notes.
+
+===============================================================================
+WHY DETERMINISTIC FIRST, LLM SECOND?
+===============================================================================
+1. Calling an LLM to check if `"B" == "B"` wastes money and introduces latency.
+2. Code-based string normalization (`_normalise`) is 100% accurate, instant, and free.
 """
 
 from __future__ import annotations
@@ -30,17 +46,31 @@ from ..models import (
 
 log = get_logger(__name__)
 
+# Minimum confidence required for automatic approval without human review
 CONFIDENCE_THRESHOLD = 0.75
 OBJECTIVE_TYPES = {QuestionType.multiple_choice, QuestionType.true_false}
 
 
 def _normalise(value: str) -> str:
+    """Normalizes whitespace and casing for exact-match comparisons."""
     return " ".join(value.strip().lower().split())
 
 
 async def evaluate_submission(
     session: AsyncSession, gateway: AIGateway, submission: Submission
 ) -> Evaluation:
+    """Evaluates an assessment submission combining rule-based and AI grading.
+
+    Algorithm:
+    1. Loads all questions belonging to the assessment.
+    2. Loops through questions:
+       - Objective question -> Exact match comparison in Python -> Score awarded, confidence 1.0.
+       - Blank answer -> Score 0, confidence 1.0.
+       - Free-text answer -> Evaluated by LLM against question rubric.
+    3. Calculates total score and finds minimum question confidence.
+    4. If confidence < 0.75 -> status = 'needs_review'.
+       Else -> status = 'ai_completed'.
+    """
     questions = {
         q.id: q
         for q in (
@@ -72,6 +102,7 @@ async def evaluate_submission(
             answer = answers.get(str(question.id), "")
             total_max += question.points
 
+            # 1. Deterministic Rule-Based Grading (Objective Questions)
             if question.type in OBJECTIVE_TYPES:
                 correct = _normalise(answer) == _normalise(question.correct_answer)
                 score = float(question.points) if correct else 0.0
@@ -92,6 +123,7 @@ async def evaluate_submission(
                     missing.append(question.learning_objective or question.prompt[:80])
                 continue
 
+            # 2. Blank Free-Text Answers
             if not answer.strip():
                 per_question.append(
                     {
@@ -108,6 +140,7 @@ async def evaluate_submission(
                 confidences.append(1.0)
                 continue
 
+            # 3. Subjective LLM Grading with Rubrics
             system, user = ANSWER_EVALUATE.render(
                 question=question.prompt,
                 rubric=question.rubric or "Award full marks for a complete, accurate answer.",
@@ -124,7 +157,7 @@ async def evaluate_submission(
                 max_tokens=1200,
             )
             graded = cast(GeneratedEvaluation, result.parsed)
-            # The model does not get to invent a scale: clamp to the question's own points.
+            # Enforce hard clamp: model cannot award more points than question.points
             score = max(0.0, min(float(question.points), graded.score))
             total_score += score
             confidences.append(graded.confidence)
@@ -145,6 +178,7 @@ async def evaluate_submission(
                 }
             )
 
+        # 4. Synthesize Evaluation Summary and HITL Gate
         confidence = min(confidences) if confidences else 0.0
         evaluation.score = round(total_score, 2)
         evaluation.max_score = total_max
@@ -156,6 +190,8 @@ async def evaluate_submission(
         evaluation.rationale = "\n".join(rationales) or "All questions graded by exact match."
         evaluation.model_used = None if not rationales else per_question[-1].get("model")
         evaluation.prompt_version = ANSWER_EVALUATE.version
+        
+        # Gate: Flag for human review if any question had low confidence (< 0.75)
         evaluation.requires_human_review = confidence < CONFIDENCE_THRESHOLD
         evaluation.status = (
             EvaluationStatus.needs_review
@@ -194,6 +230,7 @@ async def review_evaluation(
     score: float | None,
     notes: str | None,
 ) -> Evaluation:
+    """Applies human instructor approval or manual grade override to an evaluation."""
     if score is not None:
         evaluation.score = max(0.0, min(score, evaluation.max_score or score))
     evaluation.status = EvaluationStatus.approved if approve else EvaluationStatus.rejected

@@ -1,4 +1,22 @@
-"""Organization, membership and workspace management."""
+"""Organization tenancy, staff memberships, and workspace management API router.
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file manages tenant settings, team members, and logical workspaces:
+1. `GET /organizations/current` & `PATCH /current`: Inspect and update tenant name/slug/config.
+2. `GET /organizations/current/members`: Lists staff members and their assigned RBAC roles.
+3. `POST /organizations/current/members`: Invites/attaches a user to the organization.
+4. `PATCH /current/members/{id}`: Changes member role (with safety guard preventing self-demotion).
+5. `DELETE /current/members/{id}`: Removes staff member (with safety guard preventing self-removal).
+6. Workspaces (`/workspaces`): Creates and lists sub-organizational partitions.
+
+===============================================================================
+ROLE-BASED ACCESS CONTROL (RBAC):
+===============================================================================
+- Endpoints enforce `require("org:manage")` and `require("member:manage")` dependencies.
+- Prevents privilege escalation and maintains multi-tenant boundary integrity.
+"""
 
 from __future__ import annotations
 
@@ -24,10 +42,16 @@ from ..security import hash_password
 from ..services import audit
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
+workspaces = APIRouter(prefix="/workspaces", tags=["organizations"])
 
+
+# -----------------------------------------------------------------------------
+# Organization & Member Endpoints
+# -----------------------------------------------------------------------------
 
 @router.get("/current", response_model=OrganizationOut, summary="The caller's organization")
 async def current(principal: PrincipalDep, session: SessionDep) -> Organization:
+    """Returns metadata for the active caller's organization tenant."""
     org = await session.get(Organization, principal.organization_id)
     if org is None:
         raise NotFound("Organization not found")
@@ -43,6 +67,7 @@ async def current(principal: PrincipalDep, session: SessionDep) -> Organization:
 async def update(
     body: OrganizationUpdate, principal: PrincipalDep, session: SessionDep, request: Request
 ) -> Organization:
+    """Updates organization name or default configurations."""
     org = await session.get(Organization, principal.organization_id)
     if org is None:
         raise NotFound("Organization not found")
@@ -58,6 +83,7 @@ async def update(
 async def list_members(
     principal: PrincipalDep, session: SessionDep, params: PageParams = Depends(page_params)
 ) -> Page[MemberOut]:
+    """Lists all staff members belonging to the current organization."""
     stmt = (
         select(OrganizationMember, User)
         .join(User, User.id == OrganizationMember.user_id)
@@ -93,9 +119,9 @@ async def list_members(
 async def add_member(
     body: MemberInvite, principal: PrincipalDep, session: SessionDep, request: Request
 ) -> MemberOut:
+    """Invites a user into the organization with a designated role."""
     user = await session.scalar(select(User).where(User.email == body.email.lower()))
     if user is None:
-        # No mail server in the base setup: an explicit initial password is the honest option.
         user = User(
             email=body.email.lower(),
             full_name=body.full_name,
@@ -151,6 +177,7 @@ async def update_member(
     session: SessionDep,
     request: Request,
 ) -> MemberOut:
+    """Updates a member's RBAC role (prevents changing caller's own role)."""
     member = await session.get(OrganizationMember, member_id)
     if member is None or member.organization_id != principal.organization_id:
         raise NotFound("Member not found")
@@ -186,6 +213,7 @@ async def update_member(
 async def remove_member(
     member_id: uuid.UUID, principal: PrincipalDep, session: SessionDep, request: Request
 ) -> None:
+    """Removes a user from the organization (prevents removing yourself)."""
     member = await session.get(OrganizationMember, member_id)
     if member is None or member.organization_id != principal.organization_id:
         raise NotFound("Member not found")
@@ -197,14 +225,15 @@ async def remove_member(
     )
 
 
-# ------------------------------------------------------------------ workspaces
-workspaces = APIRouter(prefix="/workspaces", tags=["organizations"])
-
+# -----------------------------------------------------------------------------
+# Workspace Endpoints
+# -----------------------------------------------------------------------------
 
 @workspaces.get("", response_model=Page[WorkspaceOut], summary="List workspaces")
 async def list_workspaces(
     repo: RepoDep, params: PageParams = Depends(page_params)
 ) -> Page[WorkspaceOut]:
+    """Lists sub-organization workspace partitions."""
     items, total = await repo.list(
         Workspace, sort=params.sort, limit=params.limit, offset=params.offset
     )
@@ -230,6 +259,7 @@ async def create_workspace(
     session: SessionDep,
     request: Request,
 ) -> Workspace:
+    """Creates a new workspace partition in the current tenant."""
     workspace = repo.add(Workspace(**body.model_dump()))
     await repo.flush()
     await audit.record(

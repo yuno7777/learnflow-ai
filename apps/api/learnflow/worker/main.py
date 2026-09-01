@@ -1,7 +1,25 @@
-"""ARQ worker entrypoint: `arq learnflow.worker.main.WorkerSettings`.
+"""ARQ background worker entry point and cron scheduler.
 
-Cron jobs cover the scheduled side of the platform (n8n execution reconciliation and the
-daily inactivity sweep) so those keep working even when n8n's own scheduler is not in play.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file configures and starts the distributed background worker process:
+1. `WorkerSettings`: ARQ configuration registering async task functions, Redis connection,
+   retry limits, timeouts, and cron jobs.
+2. Cron Jobs:
+   - `sync_n8n_executions`: Runs every 5 minutes to reconcile workflows handed to n8n
+     that never reported back due to network drops or container restarts.
+   - `scan_inactive_learners`: Runs daily at 07:00 UTC to trigger inactivity sweeps
+     across active organizations.
+3. Lifecyle Hooks:
+   - `startup`: Initializes logging and AI providers.
+   - `shutdown`: Flushes ARQ connections and disposes SQLAlchemy connection pools.
+
+===============================================================================
+HOW IT IS STARTED:
+===============================================================================
+CLI Command: `arq learnflow.worker.main.WorkerSettings`
+Docker Compose: `worker` service runs this entrypoint alongside the FastAPI API container.
 """
 
 from __future__ import annotations
@@ -30,7 +48,7 @@ log = get_logger("worker")
 
 
 async def sync_n8n_executions(ctx: dict) -> int:
-    """Reconcile runs handed to n8n that never called back (n8n crashed, network dropped)."""
+    """Cron job: Reconciles workflow executions stuck in 'running' state with n8n."""
     from ..automation import n8n_client
 
     updated = 0
@@ -65,7 +83,7 @@ async def sync_n8n_executions(ctx: dict) -> int:
 
 
 async def scan_inactive_learners(ctx: dict) -> int:
-    """Fire the inactivity workflow once per organization that has one enabled."""
+    """Cron job: Triggers daily inactivity sweep workflows across active organizations."""
     triggered = 0
     async with session_scope() as session:
         organizations = (
@@ -114,17 +132,22 @@ async def scan_inactive_learners(ctx: dict) -> int:
 
 
 async def startup(ctx: dict) -> None:
+    """Worker startup hook."""
     log.info("worker_startup", provider=settings.llm_provider)
 
 
 async def shutdown(ctx: dict) -> None:
+    """Worker shutdown hook: closes Redis pools and database engines."""
     await job_service.close_arq()
     await dispose_engine()
     log.info("worker_shutdown")
 
 
 class WorkerSettings:
+    """ARQ Worker configuration class."""
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
+    
+    # Registered background tasks
     functions = [
         ingest_document,
         generate_course,
@@ -134,13 +157,16 @@ class WorkerSettings:
         run_workflow,
         transform_content,
     ]
+    
+    # Registered recurring cron schedules
     cron_jobs = [
-        cron(sync_n8n_executions, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),
-        cron(scan_inactive_learners, hour={7}, minute={0}),
+        cron(sync_n8n_executions, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),  # Every 5 min
+        cron(scan_inactive_learners, hour={7}, minute={0}),                                  # Daily 07:00 UTC
     ]
+    
     on_startup = startup
     on_shutdown = shutdown
-    max_tries = 3
-    job_timeout = 900
-    keep_result = 3600
-    max_jobs = 5
+    max_tries = 3        # Maximum automatic retries per task
+    job_timeout = 900    # 15 minutes timeout for heavy AI generation/ingestion
+    keep_result = 3600   # Retain completed job status in Redis for 1 hour
+    max_jobs = 5         # Concurrency limit per worker process

@@ -1,4 +1,21 @@
-"""Email adapters. Mock by default so local dev and CI never send real mail."""
+"""Email sending adapters and in-memory test outbox.
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file provides email delivery mechanisms for automation workflows:
+1. `EmailAdapter`: Abstract protocol defining `send(to, subject, body)`.
+2. `MockEmailAdapter`: In-memory outbox retaining the last 200 sent emails,
+   used during development and testing to prevent spamming real mailboxes.
+3. `SMTPEmailAdapter`: Production SMTP client using `smtplib` and STARTTLS.
+4. `get_email_adapter()`: Returns SMTP if `SMTP_HOST` is set, otherwise Mock.
+
+===============================================================================
+HOW IT CONNECTS TO THE REST OF THE PROJECT:
+===============================================================================
+- `automation/runners.py`: Calls `get_email_adapter().send()` during learner onboarding,
+  inactivity reminder sweeps, and weekly instructor summaries.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +33,7 @@ log = get_logger(__name__)
 
 @dataclass(slots=True)
 class SentEmail:
+    """Represents a successfully dispatched email notification."""
     to: str
     subject: str
     body: str
@@ -23,14 +41,14 @@ class SentEmail:
 
 
 class EmailAdapter(Protocol):
+    """Protocol for transactional email delivery."""
     name: str
 
     async def send(self, to: str, subject: str, body: str) -> SentEmail: ...
 
 
 class MockEmailAdapter:
-    """Logs and retains the last 200 messages so the UI/tests can assert on them."""
-
+    """In-memory outbox that logs messages and stores them in a circular buffer."""
     name = "mock"
 
     def __init__(self) -> None:
@@ -39,12 +57,14 @@ class MockEmailAdapter:
     async def send(self, to: str, subject: str, body: str) -> SentEmail:
         message = SentEmail(to=to, subject=subject, body=body)
         self.outbox.append(message)
+        # Retain only the most recent 200 emails in memory
         del self.outbox[:-200]
         log.info("email_mock_sent", to=to, subject=subject, chars=len(body))
         return message
 
 
 class SMTPEmailAdapter:
+    """Production email adapter delivering emails via standard SMTP server."""
     name = "smtp"
 
     async def send(self, to: str, subject: str, body: str) -> SentEmail:
@@ -72,6 +92,7 @@ _adapter: EmailAdapter | None = None
 
 
 def get_email_adapter() -> EmailAdapter:
+    """Returns the global active email adapter singleton."""
     global _adapter
     if _adapter is None:
         _adapter = SMTPEmailAdapter() if settings.smtp_host else MockEmailAdapter()

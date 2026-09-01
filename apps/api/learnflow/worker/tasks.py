@@ -1,8 +1,28 @@
-"""ARQ tasks. Every task is (ctx, job_id, organization_id, **kwargs) and owns its own session.
+"""ARQ background task implementations.
 
-All of them follow the same shape: mark the ledger row running, do the work in a transaction,
-mark it succeeded or failed. Raising re-queues the task under ARQ's retry policy, and the
-attempt counter on the Job row is what the UI shows.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file contains the actual worker task logic executed by ARQ worker threads:
+1. `_run()`: Shared lifecycle wrapper managing transactions, initializing `AIGateway`,
+   recording job start/progress, committing results, and catching errors so diagnostic
+   details are persisted before re-raising for ARQ retry policies.
+2. `ingest_document`: Runs the 10-stage RAG ingestion pipeline (`rag/pipeline.py`).
+3. `generate_course`: Generates multi-module course curricula (`services/generation.py`).
+4. `regenerate_module`: Re-synthesizes a single module from feedback.
+5. `generate_assessment`: Generates questions and filters through validation rules.
+6. `evaluate_submission`: Evaluates learner submissions and emits `evaluation.needs_review`
+   events if confidence drops below 0.75.
+7. `run_workflow`: Executes n8n or Python automation workflows (`automation/engine.py`).
+8. `transform_content`: Generates FAQs, flashcards, or executive summaries.
+
+===============================================================================
+TRANSACTIONAL ERROR CAPTURING:
+===============================================================================
+If a task crashes, `_run()` catches the exception, marks the `Job` row failed in PostgreSQL,
+commits the diagnostic message, and *then* re-raises the exception.
+This guarantees that ARQ sees the failure and triggers backoff retries, while the web
+UI dashboard immediately displays the exact error message to the user.
 """
 
 from __future__ import annotations
@@ -31,7 +51,7 @@ log = get_logger("worker")
 
 
 async def _run(job_id: str, organization_id: str, kind: str, body):
-    """Shared job lifecycle wrapper: start -> body(session, gateway, job) -> finish/fail."""
+    """Shared job execution wrapper handling session scope, error logging, and ARQ retries."""
     failure: Exception | None = None
     result: Any = None
     async with session_scope() as session:
@@ -43,8 +63,7 @@ async def _run(job_id: str, organization_id: str, kind: str, body):
         try:
             result = await body(session, gateway, job)
         except Exception as exc:
-            # Record the failure *inside* the transaction, then let the session commit it.
-            # Re-raising here would roll the diagnostic state back with the work.
+            # Persist failure details inside the transaction before re-raising
             await job_service.fail(session, job, f"{type(exc).__name__}: {exc}")
             failure = exc
         else:
@@ -52,13 +71,14 @@ async def _run(job_id: str, organization_id: str, kind: str, body):
 
     if failure is not None:
         log.error("job_failed", kind=kind, job_id=job_id, error=str(failure))
-        raise failure  # ARQ sees the failure and applies its retry policy
+        raise failure  # Re-raise so ARQ registers the failure and schedules retry
     return result
 
 
 async def ingest_document(
     ctx: dict, job_id: str, organization_id: str, *, document_id: str, from_stage: str | None = None
 ) -> dict[str, Any]:
+    """Background task: Ingests, parses, chunks, embeds, and indexes an uploaded document."""
     from ..rag.pipeline import run_pipeline
 
     async def body(session, gateway, job: Job) -> dict[str, Any]:
@@ -93,6 +113,7 @@ async def generate_course(
     module_count: int,
     audience: str,
 ) -> dict[str, Any]:
+    """Background task: Generates a full course curriculum from source documents."""
     from ..services.generation import generate_course as build
 
     async def body(session, gateway, job: Job) -> dict[str, Any]:
@@ -126,6 +147,7 @@ async def regenerate_module(
     module_id: str,
     instructions: str | None = None,
 ) -> dict[str, Any]:
+    """Background task: Rewrites a single course module based on instructor feedback."""
     from ..services.generation import regenerate_module as regen
 
     async def body(session, gateway, job: Job) -> dict[str, Any]:
@@ -150,6 +172,7 @@ async def generate_assessment(
     question_types: list[str],
     topics: list[str],
 ) -> dict[str, Any]:
+    """Background task: Generates quiz questions and applies validation quality filters."""
     from ..services.generation import generate_assessment as build
 
     async def body(session, gateway, job: Job) -> dict[str, Any]:
@@ -178,6 +201,7 @@ async def generate_assessment(
 async def evaluate_submission(
     ctx: dict, job_id: str, organization_id: str, *, submission_id: str
 ) -> dict[str, Any]:
+    """Background task: Auto-grades student submissions and triggers review events if needed."""
     from ..automation import events
     from ..services.evaluation import evaluate_submission as evaluate
 
@@ -186,6 +210,7 @@ async def evaluate_submission(
         if submission is None or str(submission.organization_id) != organization_id:
             raise ValueError("Submission not found in this organization")
         evaluation = await evaluate(session, gateway, submission)
+        # If confidence is low (<0.75), dispatch an event to alert human reviewers
         if evaluation.requires_human_review:
             await events.emit(
                 session,
@@ -207,6 +232,7 @@ async def evaluate_submission(
 async def run_workflow(
     ctx: dict, job_id: str, organization_id: str, *, execution_id: str
 ) -> dict[str, Any]:
+    """Background task: Executes an automation workflow execution via n8n or Python fallback."""
     from ..automation.engine import run
 
     async def body(session, gateway, job: Job) -> dict[str, Any]:
@@ -231,6 +257,7 @@ async def transform_content(
     output_type: str,
     instructions: str = "",
 ) -> dict[str, Any]:
+    """Background task: Repurposes training documents into FAQs, flashcards, or summaries."""
     from ..ai.base import ChatMessage
     from ..ai.prompts import CONTENT_TRANSFORM
     from ..ai.structured import TransformedContent

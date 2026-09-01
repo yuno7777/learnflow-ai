@@ -1,4 +1,22 @@
-"""Outbound n8n integration: signed webhook triggers + REST execution lookups."""
+"""Outbound n8n integration client: Signed webhooks and REST execution reconciliation.
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file manages outbound communication to the external n8n workflow engine:
+1. `trigger_webhook`: Serializes payload to exact JSON bytes, signs with HMAC-SHA256
+   via `security.sign_payload()`, and sends HTTP POST with `X-LearnFlow-Signature`.
+2. `get_execution`: Queries n8n REST API to fetch execution status and step outputs.
+3. `health`: Pings n8n's `/healthz` endpoint to check container readiness.
+
+===============================================================================
+WHY BYTE-EXACT SERIALIZATION MATTERS (HMAC Integrity):
+===============================================================================
+HMAC signatures verify the *exact byte sequence* of the HTTP body. If Python serializes
+JSON with spaces (`{"a": 1}`) but n8n evaluates without spaces (`{"a":1}`), the HMAC
+digest will mismatch. This client enforces compact serialization (`separators=(",", ":")`)
+before computing the signature.
+"""
 
 from __future__ import annotations
 
@@ -15,17 +33,20 @@ log = get_logger(__name__)
 
 
 class N8NUnavailable(Exception):
+    """Raised when the n8n container is offline, unreachable, or returns a 5xx error."""
     pass
 
 
 async def trigger_webhook(
     path: str, payload: dict[str, Any], *, timeout: float = 20.0
 ) -> dict[str, Any]:
-    """POST a signed payload to an n8n webhook.
+    """Sends a signed JSON payload to an n8n webhook endpoint.
 
-    The signature covers the exact bytes we send, so the n8n side must verify against the raw
-    body — not a re-serialised copy.
+    Headers attached:
+    - `X-LearnFlow-Signature`: `t=<unix>,v1=<hmac>` computed over raw body.
+    - `X-LearnFlow-Event-Id`: Execution ID string.
     """
+    # Byte-exact compact JSON serialization
     body = json.dumps(payload, default=str, separators=(",", ":")).encode()
     signature = sign_payload(body)
     url = f"{settings.n8n_base_url.rstrip('/')}/webhook/{path.lstrip('/')}"
@@ -49,7 +70,7 @@ async def trigger_webhook(
 
 
 async def get_execution(n8n_execution_id: str) -> dict[str, Any] | None:
-    """Read an execution back from the n8n REST API (needs N8N_API_KEY)."""
+    """Fetches execution details from the n8n REST API (used by worker reconciliation cron)."""
     if not settings.n8n_api_key:
         return None
     url = f"{settings.n8n_base_url.rstrip('/')}/api/v1/executions/{n8n_execution_id}"
@@ -68,6 +89,7 @@ async def get_execution(n8n_execution_id: str) -> dict[str, Any] | None:
 
 
 async def health() -> bool:
+    """Checks if the n8n cluster is online and responding."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
             response = await client.get(f"{settings.n8n_base_url.rstrip('/')}/healthz")

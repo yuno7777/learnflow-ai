@@ -1,8 +1,32 @@
-"""The document ingestion pipeline.
+"""The 10-stage resumable document ingestion pipeline.
 
-Ten stages, each recorded as a `PipelineRun` row so a failure is inspectable and the run can
-be resumed from the stage that broke instead of re-uploading. Progress is published to Redis
-so the frontend can watch it over SSE.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file implements the complete document processing lifecycle:
+1. Resumable Ingestion Pipeline: Slices file processing into 10 discrete stages:
+   `upload` -> `validation` -> `extraction` -> `cleaning` -> `metadata` ->
+   `chunking` -> `embedding` -> `indexing` -> `quality` -> `completed`.
+2. Stage-Level Audit Trail (`PipelineRun`): Every attempt at every stage is logged
+   in the database with duration in ms, retry count, and failure details.
+3. Partial Pipeline Resumption (`from_stage`): If embedding fails due to a network glitch,
+   the user can call `/reindex?from_stage=embedding` without having to re-parse the file.
+4. Live SSE Progress Publishing: Publishes stage progress events to Redis channel
+   `learnflow:document:{id}` for real-time frontend dashboard streaming.
+5. Batch Vector Embedding & Atomic Indexing: Batches chunks in groups of 64 through the
+   AI Gateway, saves chunks in PostgreSQL, and upserts vectors to ChromaDB (`org_{hex}`).
+
+===============================================================================
+PIPELINE EXECUTION CHAIN:
+===============================================================================
+Worker Task (`tasks.py:ingest_document`)
+  ──► `run_pipeline(session, document, gateway)`
+  ──► Loop through `PIPELINE_ORDER`:
+      1. Insert `PipelineRun(stage=stage, status="running")`
+      2. Publish Redis progress event
+      3. Execute stage handler (`_stage_*`)
+      4. Update `PipelineRun(status="succeeded", duration_ms)`
+  ──► Mark `document.status = "indexed"` and update `knowledge_base` counters.
 """
 
 from __future__ import annotations
@@ -37,24 +61,27 @@ from .vectorstore import VectorRecord, get_vector_store
 
 log = get_logger(__name__)
 
-EMBED_BATCH = 64
-MIN_CHUNK_CHARS = 40
+EMBED_BATCH = 64        # Number of chunks sent per embedding API call
+MIN_CHUNK_CHARS = 40    # Chunks shorter than this after cleaning are discarded
 
 
 class StageFailure(Exception):
+    """Custom exception raised when a pipeline stage fails validation or processing."""
     def __init__(self, stage: PipelineStage, message: str) -> None:
         super().__init__(message)
         self.stage = stage
 
 
 async def _publish(document_id: uuid.UUID, payload: dict[str, Any]) -> None:
+    """Publishes ingestion progress event to Redis for Server-Sent Events (SSE) streaming."""
     if not redis_enabled():
         return
     try:
         await get_redis().publish(
             f"learnflow:document:{document_id}", json.dumps(payload, default=str)
         )
-    except Exception:  # progress streaming is best-effort; ingestion must not depend on it
+    except Exception:
+        # Progress broadcasting is best-effort; failure should not abort ingestion
         log.debug("progress_publish_failed", document_id=str(document_id))
 
 
@@ -65,10 +92,22 @@ async def run_pipeline(
     *,
     from_stage: PipelineStage | None = None,
 ) -> Document:
+    """Executes the 10-stage document ingestion pipeline.
+
+    Args:
+        session: Active database session.
+        document: The `Document` model instance to process.
+        gateway: Central AI Gateway instance.
+        from_stage: Optional stage to resume from (e.g. `PipelineStage.chunking`).
+
+    Returns:
+        Document: The updated Document record.
+    """
     kb = await session.get(KnowledgeBase, document.knowledge_base_id)
     if kb is None:
         raise StageFailure(PipelineStage.validation, "Knowledge base no longer exists")
 
+    # Determine slice of stages to execute
     stages = PIPELINE_ORDER
     if from_stage is not None:
         stages = PIPELINE_ORDER[PIPELINE_ORDER.index(from_stage) :]
@@ -76,6 +115,8 @@ async def run_pipeline(
     document.status = DocumentStatus.processing
     document.error = None
     state: dict[str, Any] = {}
+    
+    # Map stages to handler functions
     handlers = {
         PipelineStage.upload: _stage_upload,
         PipelineStage.validation: _stage_validation,
@@ -89,6 +130,7 @@ async def run_pipeline(
         PipelineStage.completed: _stage_completed,
     }
 
+    # Execute stages sequentially
     for index, stage in enumerate(stages):
         previous = await session.scalar(
             select(func.count())
@@ -107,9 +149,12 @@ async def run_pipeline(
         document.stage = stage
         await session.flush()
         started = time.perf_counter()
+        
+        # Broadcast stage start over Redis SSE
         await _publish(
             document.id, {"stage": stage.value, "status": "running", "progress": document.progress}
         )
+        
         try:
             details = await handlers[stage](session, document, kb, gateway, state)
         except StageFailure as exc:
@@ -121,13 +166,14 @@ async def run_pipeline(
             )
             log.error("pipeline_stage_failed", stage=stage.value, document_id=str(document.id))
             return document
-        except Exception as exc:  # unexpected — same handling, full detail to the log only
+        except Exception as exc:
             await _finish_run(session, run, started, "failed", repr(exc)[:500])
             document.status = DocumentStatus.failed
             document.error = f"{stage.value}: unexpected error"
             log.exception("pipeline_stage_crashed", stage=stage.value)
             return document
 
+        # Mark stage succeeded
         await _finish_run(session, run, started, "succeeded", None, details)
         document.progress = round((index + 1) / len(stages), 3)
         await session.flush()
@@ -147,6 +193,7 @@ async def _finish_run(
     error: str | None,
     details: dict[str, Any] | None = None,
 ) -> None:
+    """Updates a PipelineRun record upon completion with duration and metrics."""
     run.status = status
     run.error = error
     run.details = details or {}
@@ -155,10 +202,12 @@ async def _finish_run(
     await session.flush()
 
 
-# --------------------------------------------------------------------------- stages
-
+# -----------------------------------------------------------------------------
+# Individual Stage Handlers
+# -----------------------------------------------------------------------------
 
 async def _stage_upload(session, document, kb, gateway, state) -> dict[str, Any]:
+    """Stage 1: Reads stored file bytes from filesystem storage path."""
     path = Path(document.storage_path)
     if not path.exists():
         raise StageFailure(PipelineStage.upload, f"Stored file missing at {path}")
@@ -167,6 +216,7 @@ async def _stage_upload(session, document, kb, gateway, state) -> dict[str, Any]
 
 
 async def _stage_validation(session, document, kb, gateway, state) -> dict[str, Any]:
+    """Stage 2: Re-verifies SHA-256 checksum and extension support."""
     suffix = Path(document.filename).suffix.lower()
     if extract_mod.checksum(state["raw"]) != document.checksum:
         raise StageFailure(PipelineStage.validation, "Checksum mismatch — file changed on disk")
@@ -177,6 +227,7 @@ async def _stage_validation(session, document, kb, gateway, state) -> dict[str, 
 
 
 async def _stage_extraction(session, document, kb, gateway, state) -> dict[str, Any]:
+    """Stage 3: Extracts page-aware text segments using format-specific parsers."""
     try:
         segments = extract_mod.extract(state["raw"], state["suffix"])
     except Exception as exc:
@@ -188,6 +239,7 @@ async def _stage_extraction(session, document, kb, gateway, state) -> dict[str, 
 
 
 async def _stage_cleaning(session, document, kb, gateway, state) -> dict[str, Any]:
+    """Stage 4: Normalizes Unicode, removes hyphen breaks, and drops empty segments."""
     before = sum(len(s.text) for s in state["segments"])
     for segment in state["segments"]:
         segment.text = extract_mod.clean(segment.text)
@@ -199,6 +251,7 @@ async def _stage_cleaning(session, document, kb, gateway, state) -> dict[str, An
 
 
 async def _stage_metadata(session, document, kb, gateway, state) -> dict[str, Any]:
+    """Stage 5: Extracts language, word count, document title guess, and headings."""
     text = "\n".join(s.text for s in state["segments"])
     document.word_count = len(text.split())
     document.detected_language = extract_mod.detect_language(text[:5000])
@@ -212,6 +265,7 @@ async def _stage_metadata(session, document, kb, gateway, state) -> dict[str, An
 
 
 async def _stage_chunking(session, document, kb, gateway, state) -> dict[str, Any]:
+    """Stage 6: Packs sentences into token-budgeted chunks with carried overlap."""
     chunks = chunk_segments(
         state["segments"],
         chunk_size=kb.chunk_size_tokens or settings.chunk_size_tokens,
@@ -220,7 +274,7 @@ async def _stage_chunking(session, document, kb, gateway, state) -> dict[str, An
     if not chunks:
         raise StageFailure(PipelineStage.chunking, "Chunker produced no chunks")
     state["chunks"] = chunks
-    # Re-ingestion replaces the previous chunk set atomically with the new one.
+    # Atomic re-ingestion: clear old chunks from PostgreSQL
     await session.execute(
         sql_delete(DocumentChunk).where(
             DocumentChunk.document_id == document.id,
@@ -231,6 +285,7 @@ async def _stage_chunking(session, document, kb, gateway, state) -> dict[str, An
 
 
 async def _stage_embedding(session, document, kb, gateway, state) -> dict[str, Any]:
+    """Stage 7: Generates dense embeddings in batches of 64 via AI Gateway."""
     chunks = state["chunks"]
     vectors: list[list[float]] = []
     total_tokens = 0
@@ -253,6 +308,7 @@ async def _stage_embedding(session, document, kb, gateway, state) -> dict[str, A
 
 
 async def _stage_indexing(session, document, kb, gateway, state) -> dict[str, Any]:
+    """Stage 8: Inserts chunks to PostgreSQL and upserts vectors to ChromaDB (`org_{hex}`)."""
     chunks, vectors = state["chunks"], state["vectors"]
     records: list[VectorRecord] = []
     rows: list[DocumentChunk] = []
@@ -288,6 +344,7 @@ async def _stage_indexing(session, document, kb, gateway, state) -> dict[str, An
         )
     session.add_all(rows)
     store = get_vector_store()
+    # Replace existing vectors in ChromaDB collection
     await store.delete(document.organization_id, where={"document_id": str(document.id)})
     await store.upsert(document.organization_id, records)
     state["chunk_rows"] = rows
@@ -295,6 +352,7 @@ async def _stage_indexing(session, document, kb, gateway, state) -> dict[str, An
 
 
 async def _stage_quality(session, document, kb, gateway, state) -> dict[str, Any]:
+    """Stage 9: Quality gate checking for empty or oversized chunks."""
     chunks = state["chunks"]
     empty = sum(1 for c in chunks if len(c.text) < MIN_CHUNK_CHARS)
     oversized = sum(1 for c in chunks if c.token_count > kb.chunk_size_tokens * 1.5)
@@ -304,6 +362,7 @@ async def _stage_quality(session, document, kb, gateway, state) -> dict[str, Any
 
 
 async def _stage_completed(session, document, kb, gateway, state) -> dict[str, Any]:
+    """Stage 10: Marks document indexed and updates knowledge base chunk counters."""
     document.status = DocumentStatus.indexed
     document.indexed_at = datetime.now(UTC)
     document.progress = 1.0
@@ -331,6 +390,7 @@ async def _stage_completed(session, document, kb, gateway, state) -> dict[str, A
 
 
 async def delete_document_vectors(document: Document) -> None:
+    """Removes all vectors belonging to a document from ChromaDB."""
     await get_vector_store().delete(
         document.organization_id, where={"document_id": str(document.id)}
     )

@@ -1,11 +1,48 @@
-"""Request id / access log / rate limit middleware.
+"""Pure ASGI middleware layer: Request correlation, UnitOfWork, and Rate Limiting.
 
-These are pure ASGI middleware, not `BaseHTTPMiddleware`, and that is deliberate.
-`BaseHTTPMiddleware` wraps the response in a streaming task, which defers the exit code of
-`yield` dependencies until after the body has been sent — so `get_session`'s commit could
-land *after* the client already had the response. A client that registers and immediately
-uses its new token would then be told the user does not exist. Pure ASGI middleware keeps
-dependency teardown inside the request.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file implements the low-level ASGI middleware stack that wraps every HTTP
+request entering the FastAPI application:
+1. `RequestContextMiddleware`: Generates or extracts `X-Request-ID`, binds it
+   to Structlog context variables, attaches `request.state.request_id`, echoes it
+   in response headers, and logs duration/status upon completion.
+2. `UnitOfWorkMiddleware`: Manages the database session lifecycle for each request,
+   intercepting `http.response.start` to commit the transaction BEFORE any response
+   bytes leave the server.
+3. `RateLimitMiddleware`: Fixed-window rate limiter using atomic Redis increments
+   (`INCR`) per minute bucket, returning HTTP 429 when limits are exceeded.
+
+===============================================================================
+WHY PURE ASGI MIDDLEWARE INSTEAD OF Starlette `BaseHTTPMiddleware`?
+===============================================================================
+Starlette's `BaseHTTPMiddleware` executes request processing inside an async
+streaming generator. In FastAPI, `yield` dependencies (such as DB sessions)
+run their exit/teardown code *after* the entire response body has been flushed.
+
+This creates a serious race condition:
+If a user registers (`POST /auth/register`), receives a `201 Created` response with a
+token, and immediately calls `GET /learners/me`, the database transaction from the
+first request may not have committed yet! The second request fails with 404.
+
+By writing pure ASGI middleware (`__call__(scope, receive, send)`), we intercept
+the low-level `http.response.start` message and explicitly await `session.commit()`
+BEFORE the first byte of response headers is transmitted to the client.
+
+===============================================================================
+MIDDLEWARE EXECUTION ORDER (Configured in `learnflow/main.py`):
+===============================================================================
+Inbound Request:
+  ──► RequestContextMiddleware (Assigns UUID, starts timer)
+  ──► RateLimitMiddleware (Checks Redis counter)
+  ──► UnitOfWorkMiddleware (Opens DB session on request.state)
+  ──► FastAPI Routers & Business Logic
+Outbound Response:
+  ◄── UnitOfWorkMiddleware (Commits DB transaction on http.response.start)
+  ◄── RateLimitMiddleware (Appends X-RateLimit headers)
+  ◄── RequestContextMiddleware (Appends X-Request-ID header, logs request summary)
+  ◄── Client Network Socket
 """
 
 from __future__ import annotations
@@ -25,28 +62,38 @@ from .redis_client import get_redis, redis_enabled
 log = get_logger("http")
 
 
+# -----------------------------------------------------------------------------
+# 1. Request Context & Access Logging Middleware
+# -----------------------------------------------------------------------------
+
 class RequestContextMiddleware:
-    """Assigns a request id, echoes it on the response and logs one line per request."""
+    """Assigns correlation IDs and logs structured access metrics for each HTTP request."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        # Pass non-HTTP scopes (e.g. WebSocket or lifespan events) straight through
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
+        # 1. Extract existing X-Request-ID from client, or generate a fresh UUID4 hex string
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
         request_id = headers.get("x-request-id") or uuid.uuid4().hex
-        # Starlette exposes scope["state"] as request.state.
+        
+        # 2. Attach request_id to Starlette request.state (accessible via request.state.request_id)
         scope.setdefault("state", {})["request_id"] = request_id
 
         path = scope.get("path", "")
         method = scope.get("method", "")
+        
+        # 3. Bind request_id and path to Structlog thread-local contextvars
         structlog.contextvars.bind_contextvars(request_id=request_id, path=path)
         started = time.perf_counter()
         status_code = 500
 
+        # 4. Intercept the outgoing response to append the X-Request-ID header
         async def send_wrapper(message: Message) -> None:
             nonlocal status_code
             if message["type"] == "http.response.start":
@@ -57,6 +104,7 @@ class RequestContextMiddleware:
         try:
             await self.app(scope, receive, send_wrapper)
         finally:
+            # 5. Log final request summary with duration and clean up context variables
             log.info(
                 "request",
                 method=method,
@@ -67,13 +115,21 @@ class RequestContextMiddleware:
             structlog.contextvars.clear_contextvars()
 
 
-class UnitOfWorkMiddleware:
-    """Owns one database transaction per request, and commits it *before* the response leaves.
+# -----------------------------------------------------------------------------
+# 2. UnitOfWork Database Transaction Middleware
+# -----------------------------------------------------------------------------
 
-    FastAPI runs the exit code of `yield` dependencies after the response has been sent, so a
-    commit placed there is not visible to a client that immediately issues a follow-up request.
-    Committing here — while intercepting `http.response.start`, before any bytes reach the
-    client — makes read-after-write hold for API consumers.
+class UnitOfWorkMiddleware:
+    """Guarantees one database transaction per request, committing BEFORE headers leave.
+
+    Data Flow:
+    1. Instantiates a new `AsyncSession` from `db.get_sessionmaker()`.
+    2. Places the session in `scope["state"]["db_session"]`.
+    3. During route execution, `deps.get_session` returns this exact session.
+    4. When FastAPI finishes and emits `http.response.start`, this middleware catches it
+       and awaits `session.commit()`.
+    5. If commit fails, it rolls back and replaces the response with a 500 error before
+       any data is sent over the wire.
     """
 
     def __init__(self, app: ASGIApp) -> None:
@@ -93,6 +149,7 @@ class UnitOfWorkMiddleware:
 
         async def send_wrapper(message: Message) -> None:
             nonlocal finalised
+            # Intercept response start event to commit transaction prior to sending bytes
             if message["type"] == "http.response.start" and not finalised:
                 finalised = True
                 try:
@@ -100,7 +157,7 @@ class UnitOfWorkMiddleware:
                 except Exception:
                     await session.rollback()
                     log.exception("commit_failed")
-                    # Nothing has been sent yet, so the success status can still be replaced.
+                    # Replace whatever response was planned with a clean JSON 500
                     body = json.dumps(
                         {
                             "error": {
@@ -135,11 +192,15 @@ class UnitOfWorkMiddleware:
             await session.close()
 
 
-class RateLimitMiddleware:
-    """Fixed-window counter per principal-or-IP.
+# -----------------------------------------------------------------------------
+# 3. Redis Fixed-Window Rate Limiting Middleware
+# -----------------------------------------------------------------------------
 
-    ponytail: fixed window, not sliding — a burst can straddle the boundary. Swap for a
-    token bucket in Lua if abuse becomes real.
+class RateLimitMiddleware:
+    """Fixed-window rate limiter utilizing atomic Redis increments.
+
+    Key Format: `rl:{identity_hash}:{minute_timestamp}`
+    Identity: Resolves `X-API-Key` -> `Authorization` Bearer -> Client IP.
     """
 
     EXEMPT_PREFIXES = ("/health", "/docs", "/openapi.json", "/redoc")
@@ -148,11 +209,13 @@ class RateLimitMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        # Skip rate limiting for non-HTTP scopes or if Redis is not configured
         if scope["type"] != "http" or not redis_enabled():
             await self.app(scope, receive, send)
             return
 
         path = scope.get("path", "")
+        # Skip rate limiting on health probes and OpenAPI documentation routes
         if path.startswith(self.EXEMPT_PREFIXES):
             await self.app(scope, receive, send)
             return
@@ -164,24 +227,29 @@ class RateLimitMiddleware:
             or headers.get("authorization")
             or (client[0] if client else "anonymous")
         )
+        # Create a bucket key tied to the current 1-minute window
         bucket = f"rl:{hash(identity) & 0xFFFFFFFF}:{int(time.time() // 60)}"
 
         try:
             redis = get_redis()
             count = await redis.incr(bucket)
             if count == 1:
+                # Set a 90-second expiration on first access to clean up automatically
                 await redis.expire(bucket, 90)
-        except Exception:  # Redis down must not take the API down with it
+        except Exception:
+            # RESILIENCE DECISION: Redis failure must degrade open and NOT crash the API
             log.warning("rate_limit_unavailable")
             await self.app(scope, receive, send)
             return
 
+        # Check if caller exceeded the limit
         if count > settings.rate_limit_per_minute:
             await self._reject(scope, send)
             return
 
         remaining = str(max(0, settings.rate_limit_per_minute - count))
 
+        # Append RateLimit telemetry headers to the response
         async def send_wrapper(message: Message) -> None:
             if message["type"] == "http.response.start":
                 response_headers = MutableHeaders(scope=message)
@@ -192,6 +260,7 @@ class RateLimitMiddleware:
         await self.app(scope, receive, send_wrapper)
 
     async def _reject(self, scope: Scope, send: Send) -> None:
+        """Sends a standard HTTP 429 Too Many Requests JSON response."""
         body = json.dumps(
             {
                 "error": {

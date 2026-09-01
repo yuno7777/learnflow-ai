@@ -1,9 +1,27 @@
-"""Course and assessment generation.
+"""AI-powered course and assessment generation service.
 
-Both take source documents, pull representative chunks, ask the model for a strictly-typed
-structure, validate it, and persist it. Validation is not just schema shape: generated quiz
-items are additionally checked for duplicates, ambiguity and missing rubrics before they are
-allowed to reach a learner.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file manages automated curriculum and quiz creation from training documents:
+1. `_source_context()`: Performs stratified sampling of chunks across all selected
+   documents, preventing one large file from starving other files of LLM context.
+2. `generate_course()`: Prompts the LLM for a structured curriculum, generates modules
+   and lessons, and atomically persists them in PostgreSQL.
+3. `regenerate_module()`: Rewrites a single module based on instructor revision feedback.
+4. `validate_questions()`: Sanity checks quiz questions to protect learners from bad AI output:
+   - Verifies multiple-choice questions have correct answers in the option list.
+   - Rejects duplicate options and ambiguous options ("all of the above", "both a and b").
+   - Enforces rubrics on short-answer/scenario questions.
+   - Computes fuzzy string similarity using `SequenceMatcher` to discard duplicate questions.
+5. `generate_assessment()`: Runs quiz generation and saves only validated questions.
+
+===============================================================================
+WHY STRATIFIED SAMPLING OVER CONCATENATING RAW TEXT?
+===============================================================================
+If a course is based on three PDFs (100 pages, 5 pages, and 10 pages), naive concatenation
+fills the context window with Document 1. Stratified sampling picks an even slice of
+chunks from every document, guaranteeing the course covers all uploaded sources equally.
 """
 
 from __future__ import annotations
@@ -36,12 +54,13 @@ from ..models import (
 
 log = get_logger(__name__)
 
-MAX_CONTEXT_CHUNKS = 40
-DUPLICATE_THRESHOLD = 0.85
+MAX_CONTEXT_CHUNKS = 40       # Maximum document chunks passed in prompt context
+DUPLICATE_THRESHOLD = 0.85    # Levenshtein/SequenceMatcher ratio flagging duplicate questions
 AMBIGUOUS_MARKERS = ("all of the above", "none of the above", "both a and b", "not sure")
 
 
 def slugify(value: str) -> str:
+    """Converts a course title string into a clean URL-friendly slug."""
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")[:110] or "course"
 
 
@@ -51,7 +70,7 @@ async def _source_context(
     document_ids: list[uuid.UUID],
     limit: int = MAX_CONTEXT_CHUNKS,
 ) -> str:
-    """Evenly sample chunks across the selected documents so no single file dominates."""
+    """Performs stratified chunk sampling across the list of source documents."""
     per_doc = max(1, limit // max(1, len(document_ids)))
     parts: list[str] = []
     for document_id in document_ids:
@@ -72,6 +91,7 @@ async def _source_context(
         )
         if not rows:
             continue
+        # Stride through chunks evenly across the document
         step = max(1, len(rows) // per_doc)
         parts.extend(chunk.content for chunk in rows[::step][:per_doc])
     if not parts:
@@ -81,7 +101,10 @@ async def _source_context(
     return "\n\n---\n\n".join(parts)
 
 
-# --------------------------------------------------------------------------- course
+# -----------------------------------------------------------------------------
+# Course Generation Functions
+# -----------------------------------------------------------------------------
+
 async def generate_course(
     session: AsyncSession,
     gateway: AIGateway,
@@ -91,6 +114,7 @@ async def generate_course(
     module_count: int,
     audience: str,
 ) -> Course:
+    """Generates a complete multi-module course curriculum from source documents."""
     context = await _source_context(
         session, course.organization_id, [uuid.UUID(str(d)) for d in course.source_document_ids]
     )
@@ -116,7 +140,7 @@ async def generate_course(
     course.prompt_version = COURSE_OUTLINE.version
     course.status = CourseStatus.review
 
-    # Regeneration replaces the whole structure; cascade removes the old modules/lessons.
+    # Atomic reset of previous modules and lessons
     for module in list(course.modules):
         await session.delete(module)
     await session.flush()
@@ -157,6 +181,7 @@ async def regenerate_module(
     module: Module,
     instructions: str | None,
 ) -> Module:
+    """Regenerates a single module inside an existing course according to custom revision instructions."""
     context = await _source_context(
         session, course.organization_id, [uuid.UUID(str(d)) for d in course.source_document_ids]
     )
@@ -201,9 +226,20 @@ async def regenerate_module(
     return module
 
 
-# --------------------------------------------------------------------------- assessment
+# -----------------------------------------------------------------------------
+# Assessment Generation & Validation
+# -----------------------------------------------------------------------------
+
 def validate_questions(questions: list[Any]) -> dict[str, Any]:
-    """Rejects items that would be unfair to a learner. Returns a report; caller decides."""
+    """Sanity-checks LLM generated questions against rigorous pedagogic quality standards.
+
+    Checks:
+    1. Rubric required for short-answer and scenario questions.
+    2. Multiple-choice correct answer exists in options list.
+    3. Multiple-choice options are unique and free of ambiguous choices.
+    4. True/False correct answer is strictly boolean.
+    5. Discards duplicate questions matching `SequenceMatcher` similarity ratio >= 0.85.
+    """
     issues: list[dict[str, Any]] = []
     accepted: list[int] = []
 
@@ -228,6 +264,7 @@ def validate_questions(questions: list[Any]) -> dict[str, Any]:
         if len(question.source_reference.strip()) < 10:
             problems.append("unsupported_by_source")
 
+        # Fuzzy duplicate detection against previously accepted questions
         for other in accepted:
             similarity = SequenceMatcher(
                 None, question.prompt.lower(), questions[other].prompt.lower()
@@ -259,6 +296,7 @@ async def generate_assessment(
     question_types: list[str],
     topics: list[str],
 ) -> Assessment:
+    """Generates an assessment quiz, filters out flawed questions, and persists approved items."""
     context = await _source_context(session, assessment.organization_id, document_ids)
     system, user = QUIZ_GENERATE.render(
         context=context[:20000],
@@ -280,10 +318,12 @@ async def generate_assessment(
     if not report["accepted"]:
         raise ValidationFailed("Every generated question failed validation", {"report": report})
 
+    # Clear previous questions
     for question in list(assessment.questions):
         await session.delete(question)
     await session.flush()
 
+    # Save only validated questions
     for position, index in enumerate(report["accepted"]):
         item = generated.questions[index]
         session.add(
@@ -320,6 +360,7 @@ async def generate_assessment(
 async def require_course(
     session: AsyncSession, organization_id: uuid.UUID, course_id: uuid.UUID
 ) -> Course:
+    """Helper to retrieve a course belonging to the current organization or raise 404."""
     course = await session.get(Course, course_id)
     if course is None or course.organization_id != organization_id:
         raise NotFound("Course not found")

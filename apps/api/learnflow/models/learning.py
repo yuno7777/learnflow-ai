@@ -1,4 +1,29 @@
-"""Courses, modules, lessons, assessments, submissions and AI evaluations."""
+"""Courses, modules, lessons, assessments, submissions, and AI evaluation models.
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file defines the educational and grading data layer of LearnFlow AI:
+1. `CourseStatus` & `Course`: The top-level training course entity, tracking source
+   document references, learning objectives, and prompt versioning.
+2. `Module` & `Lesson`: Ordered hierarchical curriculum structure.
+3. `Enrollment`: Student enrollment linking `Learner` to `Course` with progress percentage.
+4. `Assessment` & `Question`: Generated quizzes (multiple choice, true/false, short answer, scenario)
+   with passing scores and validation reports.
+5. `Submission`: Student-submitted answers for an assessment.
+6. `Evaluation`: Detailed auto-grading record, confidence score, per-question breakdown,
+   and the `requires_human_review` gate.
+
+===============================================================================
+EVALUATION & HUMAN REVIEW ARCHITECTURE:
+===============================================================================
+- Objective questions (multiple choice, true/false) are graded in code with 1.0 confidence.
+- Subjective questions (essays, scenarios) are graded by an LLM against rubrics.
+- If the minimum confidence score across all questions is < 0.75, `requires_human_review`
+  is set to `True` and `status` becomes `needs_review`.
+- The evaluation remains provisional until an instructor/reviewer manually approves or
+  overrides the score via `POST /api/v1/evaluations/{id}/review`.
+"""
 
 from __future__ import annotations
 
@@ -27,23 +52,28 @@ from .base import TenantEntity
 
 
 def _enum(e, n):
+    """Helper to create cross-dialect SQLAlchemy Enum columns."""
     return SAEnum(e, native_enum=False, length=n, values_callable=lambda x: [m.value for m in x])
 
 
+# -----------------------------------------------------------------------------
+# Enums
+# -----------------------------------------------------------------------------
+
 class CourseStatus(str, enum.Enum):
-    draft = "draft"
-    generating = "generating"
-    review = "review"
-    published = "published"
-    archived = "archived"
-    failed = "failed"
+    draft = "draft"            # Newly created or manually authored
+    generating = "generating"  # Background AI worker is currently generating modules/lessons
+    review = "review"          # Generated, awaiting instructor approval/publishing
+    published = "published"    # Active and visible to enrolled learners in /learn portal
+    archived = "archived"      # Retired course
+    failed = "failed"          # AI generation failed
 
 
 class QuestionType(str, enum.Enum):
-    multiple_choice = "multiple_choice"
-    true_false = "true_false"
-    short_answer = "short_answer"
-    scenario = "scenario"
+    multiple_choice = "multiple_choice"  # Graded in code (0 AI cost)
+    true_false = "true_false"            # Graded in code (0 AI cost)
+    short_answer = "short_answer"        # Graded via LLM rubric
+    scenario = "scenario"                # Graded via LLM rubric
 
 
 class Difficulty(str, enum.Enum):
@@ -53,15 +83,20 @@ class Difficulty(str, enum.Enum):
 
 
 class EvaluationStatus(str, enum.Enum):
-    pending = "pending"
-    ai_completed = "ai_completed"
-    needs_review = "needs_review"
-    approved = "approved"
-    rejected = "rejected"
-    failed = "failed"
+    pending = "pending"              # Evaluation queued
+    ai_completed = "ai_completed"    # Graded by AI with high confidence (>= 0.75)
+    needs_review = "needs_review"    # Flagged for human review (confidence < 0.75)
+    approved = "approved"            # Approved/overridden by human reviewer
+    rejected = "rejected"            # Rejected by reviewer
+    failed = "failed"                # Evaluation pipeline error
 
+
+# -----------------------------------------------------------------------------
+# Course & Curriculum Hierarchy Models
+# -----------------------------------------------------------------------------
 
 class Course(TenantEntity):
+    """Top-level course entity containing modules and lessons."""
     __tablename__ = "courses"
 
     title: Mapped[str] = mapped_column(String(300), nullable=False)
@@ -96,6 +131,7 @@ class Course(TenantEntity):
 
 
 class Module(TenantEntity):
+    """A chapter or major section inside a course."""
     __tablename__ = "modules"
 
     course_id: Mapped[uuid.UUID] = mapped_column(
@@ -116,6 +152,7 @@ class Module(TenantEntity):
 
 
 class Lesson(TenantEntity):
+    """An individual learning unit containing markdown content, exercises, and citations."""
     __tablename__ = "lessons"
 
     module_id: Mapped[uuid.UUID] = mapped_column(
@@ -133,6 +170,7 @@ class Lesson(TenantEntity):
 
 
 class Enrollment(TenantEntity):
+    """Maps a learner to a course, tracking progress and lesson completions."""
     __tablename__ = "enrollments"
     __table_args__ = (UniqueConstraint("learner_id", "course_id", name="uq_enrollment"),)
 
@@ -148,7 +186,12 @@ class Enrollment(TenantEntity):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+# -----------------------------------------------------------------------------
+# Assessment, Submission, and Evaluation Models
+# -----------------------------------------------------------------------------
+
 class Assessment(TenantEntity):
+    """A quiz or exam testing comprehension of course concepts."""
     __tablename__ = "assessments"
 
     course_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -176,6 +219,7 @@ class Assessment(TenantEntity):
 
 
 class Question(TenantEntity):
+    """An individual question within an assessment."""
     __tablename__ = "questions"
 
     assessment_id: Mapped[uuid.UUID] = mapped_column(
@@ -198,6 +242,7 @@ class Question(TenantEntity):
 
 
 class Submission(TenantEntity):
+    """A student's submitted answers to an assessment."""
     __tablename__ = "submissions"
 
     assessment_id: Mapped[uuid.UUID] = mapped_column(
@@ -217,8 +262,11 @@ class Submission(TenantEntity):
 
 
 class Evaluation(TenantEntity):
-    """AI grade for a submission. Never authoritative until a human approves low confidence."""
+    """The grading evaluation for a submission.
 
+    Contains the overall score, AI confidence, strengths, missing concepts,
+    and the `requires_human_review` gate.
+    """
     __tablename__ = "evaluations"
 
     submission_id: Mapped[uuid.UUID] = mapped_column(

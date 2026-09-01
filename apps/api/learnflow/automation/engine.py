@@ -1,10 +1,28 @@
-"""Workflow execution engine.
+"""Workflow execution engine and n8n callback lifecycle manager.
 
-An execution is always owned by LearnFlow, whether the actual work runs in n8n or in the
-built-in runner. n8n is the primary engine: if the workflow has a webhook path and n8n
-answers, we hand off and wait for the signed callback. If n8n is not configured or is down,
-the equivalent built-in runner executes the same steps locally so the platform degrades
-instead of stalling — and the execution row records which path was taken.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file is the core runtime engine for all workflow automations:
+1. `StepRecorder`: Async context manager that records individual `WorkflowStep`
+   database rows and streams step transitions over Redis Pub/Sub (`learnflow:execution:{id}`).
+2. `create_execution`: Creates `WorkflowExecution` records with tenant-unique idempotency keys.
+3. `run`: The execution dispatcher:
+   - Primary Path: Sends HMAC-signed webhook to n8n container (`n8n_client.trigger_webhook()`).
+   - Fallback Path: If n8n is offline or unconfigured, catches `N8NUnavailable` and invokes
+     the corresponding Python runner (`automation/runners.py`).
+4. `_attach_costs`: Aggregates all `llm_calls` made during this execution by explicit foreign key
+   (`workflow_execution_id == execution.id`), preventing attribution race conditions.
+5. `apply_callback`: Idempotently updates the execution and records step outputs when n8n
+   fires its signed completion callback.
+
+===============================================================================
+WHY FOREIGN KEY COST ATTRIBUTION MATTERS (Data Accuracy):
+===============================================================================
+Attributing LLM costs using time windows (`created_at BETWEEN start AND end`) causes
+serious bugs when multiple workflows run concurrently in the same tenant, as each
+workflow steals or duplicates the other's token usage. Attaching `workflow_execution_id`
+to `LLMCall` guarantees 100% accurate cost attribution.
 """
 
 from __future__ import annotations
@@ -36,6 +54,7 @@ log = get_logger(__name__)
 
 
 async def publish(execution: WorkflowExecution, event: dict[str, Any]) -> None:
+    """Publishes workflow execution updates to Redis Pub/Sub for SSE streaming."""
     if not redis_enabled():
         return
     try:
@@ -48,7 +67,12 @@ async def publish(execution: WorkflowExecution, event: dict[str, Any]) -> None:
 
 
 class StepRecorder:
-    """Creates WorkflowStep rows and streams each transition to subscribers."""
+    """Async context manager for logging and streaming individual workflow steps.
+
+    Usage:
+        async with recorder.step("send_email", "email") as step:
+            step.output = {"sent": True}
+    """
 
     def __init__(self, session: AsyncSession, execution: WorkflowExecution) -> None:
         self.session = session
@@ -57,6 +81,7 @@ class StepRecorder:
 
     @asynccontextmanager
     async def step(self, name: str, kind: str):
+        """Creates a WorkflowStep row and tracks start/finish times and errors."""
         self._position += 1
         step = WorkflowStep(
             organization_id=self.execution.organization_id,
@@ -106,7 +131,7 @@ async def create_execution(
     learner_id: uuid.UUID | None = None,
     course_id: uuid.UUID | None = None,
 ) -> tuple[WorkflowExecution, bool]:
-    """Returns (execution, created). A repeated idempotency key returns the original run."""
+    """Creates a new WorkflowExecution row or returns existing one matching idempotency key."""
     key = idempotency_key or uuid.uuid4().hex
     existing = await session.scalar(
         select(WorkflowExecution).where(
@@ -139,7 +164,8 @@ async def run(
     workflow: Workflow,
     gateway: AIGateway,
 ) -> WorkflowExecution:
-    from .runners import RUNNERS  # imported here to avoid a circular import at module load
+    """Executes a workflow execution through n8n or the built-in Python runner."""
+    from .runners import RUNNERS
 
     gateway.workflow_execution_id = execution.id
     execution.status = ExecutionStatus.running
@@ -152,6 +178,7 @@ async def run(
     started = time.perf_counter()
 
     try:
+        # Primary Path: Dispatch signed webhook to external n8n cluster
         if workflow.n8n_webhook_path:
             async with recorder.step("dispatch_to_n8n", "http") as step:
                 payload = {
@@ -170,7 +197,7 @@ async def run(
                         str(response.get("executionId") or response.get("execution_id") or "")
                         or None
                     )
-                    # n8n owns the run from here; the signed callback closes it out.
+                    # Handed off to n8n; inbound callback will mark execution completed
                     execution.output_payload = {"handoff": "n8n", **response}
                     await session.flush()
                     await publish(
@@ -182,6 +209,7 @@ async def run(
                     step.output = {"engine": "builtin", "reason": str(exc)[:300]}
                     log.warning("n8n_unavailable_falling_back", workflow=workflow.key)
 
+        # Fallback Path: Execute Python runner locally
         runner = RUNNERS.get(workflow.template)
         if runner is None:
             raise ValueError(f"No runner for template '{workflow.template}'")
@@ -210,11 +238,7 @@ async def run(
 
 
 async def _attach_costs(session: AsyncSession, execution: WorkflowExecution) -> None:
-    """Roll the LLM spend of this run onto the execution row for the cost dashboard.
-
-    Attribution is by explicit foreign key, not by a created_at window: two runs executing
-    concurrently in the same organization would otherwise each claim the other's tokens.
-    """
+    """Attaches total token spend and USD cost from `llm_calls` to this execution row."""
     from ..models import LLMCall
 
     row = (
@@ -245,7 +269,10 @@ async def apply_callback(
     input_tokens: int = 0,
     output_tokens: int = 0,
 ) -> WorkflowExecution:
-    """Idempotent: a duplicate callback for a finished execution is a no-op."""
+    """Updates an execution from an inbound signed n8n callback.
+
+    Idempotent: Duplicate callback invocations for already-finished executions are safely ignored.
+    """
     if execution.status in (ExecutionStatus.succeeded, ExecutionStatus.cancelled):
         return execution
 

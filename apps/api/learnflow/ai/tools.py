@@ -1,7 +1,25 @@
-"""Tools the learner assistant may call, and the dispatcher that executes them.
+"""Function calling tool definitions and runtime dispatcher for the Learner Assistant.
 
-Each invocation is recorded on the message row, so a conversation can always be replayed
-with the exact data the model saw.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file defines the tools that the Learner Assistant can invoke during multi-turn chat:
+1. `TOOL_DEFINITIONS`: JSON schemas passed to the LLM describing available tools:
+   - `search_knowledge_base`: Retrieves grounded citations from the RAG knowledge base.
+   - `get_learner_progress`: Queries active course enrollments and completion percentages.
+   - `get_course_info`: Inspects module and lesson curricula.
+   - `create_support_ticket`: Escalates unresolved questions to human staff.
+   - `recommend_content`: Suggests uncompleted lessons for the student.
+2. `ToolBox`: The execution class that handles tool dispatching, interacts with the
+   database, and collects citation metadata to attach to the final assistant message.
+
+===============================================================================
+HOW IT CONNECTS TO THE REST OF THE PROJECT:
+===============================================================================
+- `routers/assistant.py`: Passes `TOOL_DEFINITIONS` to `AIGateway.complete()`. When the
+  model emits `tool_calls`, `ToolBox.call()` executes the tool, returns the result
+  back to the model, and loops until a final natural language answer is generated.
+- `rag/retrieval.py`: `ToolBox._search_knowledge_base()` calls `retrieve()`.
 """
 
 from __future__ import annotations
@@ -15,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import Course, Enrollment, Learner, Lesson, Module, SupportTicket
 from ..rag.retrieval import retrieve
 
+# OpenAI-compatible function calling schemas exposed to the model
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "type": "function",
@@ -78,6 +97,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
 
 
 class ToolBox:
+    """Tool dispatcher executing assistant tool calls against the database and RAG engine."""
+
     def __init__(
         self,
         session: AsyncSession,
@@ -89,15 +110,18 @@ class ToolBox:
         self.gateway = gateway
         self.organization_id = organization_id
         self.learner = learner
+        # Collects citations during tool execution to attach to the final chat message
         self.citations: list[dict[str, Any]] = []
 
     async def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Dispatches tool call by name to internal handler method."""
         handler = getattr(self, f"_{name}", None)
         if handler is None:
             return {"error": f"Unknown tool '{name}'"}
         return await handler(**arguments)
 
     async def _search_knowledge_base(self, query: str, top_k: int = 5) -> dict[str, Any]:
+        """Performs hybrid dense+keyword search and accumulates citations."""
         retrieval = await retrieve(
             self.session,
             self.gateway,
@@ -126,6 +150,7 @@ class ToolBox:
         }
 
     async def _get_learner_progress(self) -> dict[str, Any]:
+        """Queries enrollment progress for the active learner."""
         if self.learner is None:
             return {"error": "No learner is attached to this conversation"}
         rows = (
@@ -149,6 +174,7 @@ class ToolBox:
         }
 
     async def _get_course_info(self, course_id: str) -> dict[str, Any]:
+        """Returns the module and lesson curriculum of a course."""
         course = await self.session.get(Course, uuid.UUID(course_id))
         if course is None or course.organization_id != self.organization_id:
             return {"error": "Course not found"}
@@ -171,6 +197,7 @@ class ToolBox:
         }
 
     async def _create_support_ticket(self, subject: str, body: str) -> dict[str, Any]:
+        """Inserts a new support ticket row when the assistant cannot resolve an inquiry."""
         ticket = SupportTicket(
             organization_id=self.organization_id,
             subject=subject[:300],
@@ -183,6 +210,7 @@ class ToolBox:
         return {"ticket_id": str(ticket.id), "status": "open"}
 
     async def _recommend_content(self, limit: int = 3) -> dict[str, Any]:
+        """Finds next uncompleted lessons in the learner's enrolled courses."""
         if self.learner is None:
             return {"error": "No learner is attached to this conversation"}
         enrollments = (

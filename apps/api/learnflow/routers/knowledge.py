@@ -1,4 +1,28 @@
-"""Knowledge bases and document ingestion."""
+"""Knowledge base management and document ingestion API router.
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file manages RAG knowledge bases and uploaded files:
+1. Knowledge Base CRUD (`/knowledge-bases`): Create, list, inspect, and delete collections.
+   Deleting a knowledge base automatically purges its vectors from ChromaDB.
+2. Document Upload (`POST /documents`):
+   - Validates file extensions and binary magic bytes.
+   - Calculates SHA-256 checksum to reject duplicate uploads.
+   - Saves file to tenant storage path (`/uploads/{org_id}/{doc_id}.pdf`).
+   - Enqueues background ingestion job (`ingest_document`).
+3. Document Inspection (`GET /documents/{id}` & `/chunks`): Returns stage progress and chunk tokens.
+4. Resumable Reindexing (`POST /documents/{id}/reindex?from_stage=...`): Triggers re-ingestion.
+5. Live SSE Progress (`GET /documents/{id}/stream`): Streams real-time pipeline progress
+   events (`upload` -> `validation` -> ... -> `indexing`) using Server-Sent Events over Redis.
+
+===============================================================================
+HOW IT CONNECTS TO THE REST OF THE PROJECT:
+===============================================================================
+- `rag/extract.py`: Validates uploads and computes file checksums.
+- `rag/pipeline.py`: Executes the 10-stage ingestion pipeline.
+- `worker/tasks.py`: Ingestion is scheduled as an async ARQ background job.
+"""
 
 from __future__ import annotations
 
@@ -33,10 +57,15 @@ router = APIRouter(prefix="/knowledge-bases", tags=["knowledge"])
 documents_router = APIRouter(prefix="/documents", tags=["documents"])
 
 
+# -----------------------------------------------------------------------------
+# Knowledge Base Endpoints
+# -----------------------------------------------------------------------------
+
 @router.get("", response_model=Page[KnowledgeBaseOut], summary="List knowledge bases")
 async def list_kbs(
     repo: RepoDep, params: PageParams = Depends(page_params)
 ) -> Page[KnowledgeBaseOut]:
+    """Lists all knowledge base containers in the tenant."""
     items, total = await repo.list(
         KnowledgeBase, sort=params.sort, limit=params.limit, offset=params.offset
     )
@@ -62,6 +91,7 @@ async def create_kb(
     principal: PrincipalDep,
     request: Request,
 ) -> KnowledgeBase:
+    """Creates a new knowledge base collection for RAG grounding."""
     kb = repo.add(KnowledgeBase(**body.model_dump(), embedding_model=settings.embedding_model))
     await repo.flush()
     await audit.record(
@@ -72,6 +102,7 @@ async def create_kb(
 
 @router.get("/{kb_id}", response_model=KnowledgeBaseOut, summary="Knowledge base detail")
 async def get_kb(kb_id: uuid.UUID, repo: RepoDep) -> KnowledgeBase:
+    """Fetches metadata and document/chunk counts for a knowledge base."""
     return await repo.get(KnowledgeBase, kb_id)
 
 
@@ -84,6 +115,7 @@ async def get_kb(kb_id: uuid.UUID, repo: RepoDep) -> KnowledgeBase:
 async def delete_kb(
     kb_id: uuid.UUID, repo: RepoDep, session: SessionDep, principal: PrincipalDep, request: Request
 ) -> None:
+    """Deletes a knowledge base, its documents, and purges all vectors from ChromaDB."""
     kb = await repo.get(KnowledgeBase, kb_id)
     docs, _ = await repo.list(Document, where=[Document.knowledge_base_id == kb.id], limit=100)
     for document in docs:
@@ -94,7 +126,10 @@ async def delete_kb(
     )
 
 
-# ------------------------------------------------------------------ documents
+# -----------------------------------------------------------------------------
+# Document Endpoints
+# -----------------------------------------------------------------------------
+
 @documents_router.get("", response_model=Page[DocumentOut], summary="List documents")
 async def list_documents(
     repo: RepoDep,
@@ -102,6 +137,7 @@ async def list_documents(
     knowledge_base_id: uuid.UUID | None = Query(None),
     doc_status: DocumentStatus | None = Query(None, alias="status"),
 ) -> Page[DocumentOut]:
+    """Lists documents with optional filters by knowledge base and ingestion status."""
     where = []
     if knowledge_base_id:
         where.append(Document.knowledge_base_id == knowledge_base_id)
@@ -133,13 +169,17 @@ async def upload_document(
     knowledge_base_id: uuid.UUID = Query(...),
     file: UploadFile = File(...),
 ) -> DocumentDetail:
+    """Uploads a PDF, DOCX, CSV, or Markdown file and dispatches async background ingestion."""
     kb = await repo.get(KnowledgeBase, knowledge_base_id)
     data = await file.read()
+    
+    # 1. Validate magic bytes, extensions, and size limits
     suffix = extract_mod.validate_upload(
         file.filename or "upload", file.content_type or "", data, settings.max_upload_bytes
     )
     digest = extract_mod.checksum(data)
 
+    # 2. Check for duplicate file checksums in the knowledge base
     duplicate = await session.scalar(
         repo.select(Document).where(
             Document.checksum == digest,
@@ -153,6 +193,7 @@ async def upload_document(
             {"document_id": str(duplicate.id)},
         )
 
+    # 3. Create document record and save file bytes to disk
     document = repo.add(
         Document(
             knowledge_base_id=kb.id,
@@ -173,6 +214,7 @@ async def upload_document(
     document.storage_path = str(path)
     await repo.flush()
 
+    # 4. Enqueue background ingestion task
     job = await jobs.enqueue(
         session,
         repo.organization_id,
@@ -191,8 +233,6 @@ async def upload_document(
         request=request,
         details={"filename": document.filename, "size_bytes": len(data)},
     )
-    # Build from the flat serializer: a freshly-flushed instance would lazy-load `runs`,
-    # which is illegal on an async session.
     detail = DocumentDetail(**DocumentOut.model_validate(document).model_dump(), job_id=job.id)
     return detail
 
@@ -201,6 +241,7 @@ async def upload_document(
 async def get_document(
     document_id: uuid.UUID, repo: RepoDep, session: SessionDep
 ) -> DocumentDetail:
+    """Returns detailed document metadata and pipeline attempt audit records."""
     document = await repo.get(Document, document_id)
     detail = DocumentDetail(**DocumentOut.model_validate(document).model_dump())
     detail.chunk_count = int(
@@ -221,6 +262,7 @@ async def get_document(
 async def list_chunks(
     document_id: uuid.UUID, repo: RepoDep, params: PageParams = Depends(page_params)
 ) -> Page[ChunkOut]:
+    """Lists the indexed text chunks, token counts, and page numbers for a document."""
     await repo.get(Document, document_id)
     items, total = await repo.list(
         DocumentChunk,
@@ -252,6 +294,7 @@ async def reindex(
     request: Request,
     from_stage: PipelineStage | None = Query(None),
 ) -> DocumentDetail:
+    """Re-runs the ingestion pipeline for a document, optionally resuming from a specific stage."""
     document = await repo.get(Document, document_id)
     if not Path(document.storage_path).exists():
         raise ValidationFailed("Original file is no longer on disk; re-upload it")
@@ -288,6 +331,7 @@ async def delete_document(
     principal: PrincipalDep,
     request: Request,
 ) -> None:
+    """Deletes a document, removes vectors from ChromaDB, and deletes the file from disk."""
     document = await repo.get(Document, document_id)
     await delete_document_vectors(document)
     path = Path(document.storage_path)
@@ -309,10 +353,11 @@ async def delete_document(
     response_class=EventSourceResponse,
 )
 async def stream_progress(document_id: uuid.UUID, repo: RepoDep):
+    """Streams live Server-Sent Events (SSE) of ingestion progress subscribed via Redis."""
     document = await repo.get(Document, document_id)
 
     async def publisher():
-        # Emit current state immediately so a late subscriber is not left staring at nothing.
+        # Emit initial state
         yield {
             "event": "progress",
             "data": json.dumps(
@@ -327,10 +372,10 @@ async def stream_progress(document_id: uuid.UUID, repo: RepoDep):
             document.status in (DocumentStatus.indexed, DocumentStatus.failed)
             or not redis_enabled()
         ):
-            # Without Redis there is nothing to subscribe to; the client falls back to polling.
             yield {"event": "done", "data": json.dumps({"status": document.status.value})}
             return
 
+        # Subscribe to Redis live channel
         pubsub = get_redis().pubsub()
         await pubsub.subscribe(f"learnflow:document:{document_id}")
         try:
@@ -351,7 +396,7 @@ async def stream_progress(document_id: uuid.UUID, repo: RepoDep):
                 ):
                     yield {"event": "done", "data": payload}
                     return
-        except asyncio.CancelledError:  # client disconnected
+        except asyncio.CancelledError:
             raise
         finally:
             await pubsub.unsubscribe()

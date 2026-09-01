@@ -1,4 +1,30 @@
-"""Learner-facing assistant (tool calling) and the content transformation workflow."""
+"""Learner Assistant API router with multi-turn tool calling and content transformations.
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file powers the interactive AI chatbot and content repurposing features:
+1. `POST /assistant/ask`: Multi-turn conversational learner assistant:
+   - Injects unconditional knowledge base grounding pass on turn 1.
+   - Iterates up to `MAX_TOOL_ROUNDS = 4` executing tool calls via `ToolBox`
+     (`search_knowledge_base`, `get_learner_progress`, `get_course_info`, `create_support_ticket`, `recommend_content`).
+   - Accumulates citations and appends complete message history to PostgreSQL.
+2. `GET /assistant/messages/{id}`: Retrieves full chat conversation history.
+3. `POST /content/transform`: Generates flashcards, FAQs, executive summaries, or quiz items
+   from indexed documents as asynchronous background jobs.
+
+===============================================================================
+MULTI-TURN FUNCTION CALLING LOOP:
+===============================================================================
+User Question
+  ──► Unconditional RAG Grounding (`search_knowledge_base`)
+  ──► AI Gateway Completion with `TOOL_DEFINITIONS`
+  ──► If Model emits `tool_calls`:
+      1. `ToolBox.call(name, args)`
+      2. Append `ChatMessage("tool", output)`
+      3. Loop back to AI Gateway
+  ──► Return final grounded response + collected citation metadata.
+"""
 
 from __future__ import annotations
 
@@ -20,7 +46,7 @@ from ..services import jobs
 
 router = APIRouter(tags=["assistant"])
 
-MAX_TOOL_ROUNDS = 4
+MAX_TOOL_ROUNDS = 4  # Maximum sequential function call iterations before forcing response
 OUTPUT_TYPES = [
     "short_summary",
     "detailed_notes",
@@ -34,12 +60,14 @@ OUTPUT_TYPES = [
 
 
 class AssistantAsk(BaseModel):
+    """Payload schema for asking a question to the learner assistant."""
     question: str = Field(min_length=2, max_length=4000)
     learner_id: uuid.UUID | None = None
     conversation_id: uuid.UUID | None = None
 
 
 class AssistantReply(BaseModel):
+    """Response payload returned by the learner assistant."""
     answer: str
     conversation_id: uuid.UUID
     message_id: uuid.UUID
@@ -63,15 +91,17 @@ async def ask(
     principal: PrincipalDep,
     request: Request,
 ) -> AssistantReply:
+    """Interacts with the AI assistant, executing function calling tools and returning citations."""
     gateway = AIGateway(
         session,
         repo.organization_id,
         user_id=principal.user.id if principal.user else None,
         request_id=getattr(request.state, "request_id", None),
     )
-    # A learner asking about progress can only ever be asking about their own.
     learner_id = scoped_learner_id(principal, body.learner_id)
     learner = await repo.get(Learner, learner_id) if learner_id else None
+    
+    # 1. Fetch or create conversation thread
     conversation = (
         await repo.get(Conversation, body.conversation_id)
         if body.conversation_id
@@ -87,13 +117,13 @@ async def ask(
     await repo.flush()
     repo.add(Message(conversation_id=conversation.id, role="user", content=body.question))
 
+    # 2. Render prompt and execute initial grounding pass
     toolbox = ToolBox(session, gateway, repo.organization_id, learner)
     system, user = LEARNER_ASSISTANT.render(question=body.question)
     messages = [ChatMessage("system", system), ChatMessage("user", user)]
     executed: list[dict[str, Any]] = []
 
-    # Ground the first turn unconditionally: the assistant should never answer from the model's
-    # own priors when the organization's own material is available.
+    # Unconditional RAG grounding query
     grounding = await toolbox.call("search_knowledge_base", {"query": body.question, "top_k": 5})
     executed.append({"name": "search_knowledge_base", "arguments": {"query": body.question}})
     messages.append(
@@ -104,6 +134,7 @@ async def ask(
         )
     )
 
+    # 3. Multi-turn Tool Calling Loop
     result = None
     for _ in range(MAX_TOOL_ROUNDS):
         result = await gateway.complete(
@@ -116,7 +147,8 @@ async def ask(
             retrieved_chunk_ids=[c["chunk_id"] for c in toolbox.citations],
         )
         if not result.tool_calls:
-            break
+            break  # Model is ready with its final natural language answer
+            
         messages.append(ChatMessage("assistant", result.text or ""))
         for call in result.tool_calls:
             output = await toolbox.call(call.name, call.arguments)
@@ -131,6 +163,7 @@ async def ask(
             )
 
     assert result is not None
+    # 4. Save assistant response and citations to database
     assistant_message = repo.add(
         Message(
             conversation_id=conversation.id,
@@ -158,11 +191,13 @@ async def ask(
 
 @router.get("/assistant/messages/{conversation_id}", response_model=list[MessageOut])
 async def history(conversation_id: uuid.UUID, repo: RepoDep) -> list[Message]:
+    """Returns full chronological chat history for a conversation."""
     conversation = await repo.get(Conversation, conversation_id)
     return conversation.messages
 
 
 class TransformRequest(BaseModel):
+    """Payload schema for requesting asynchronous document content transformations."""
     document_ids: list[uuid.UUID] = Field(min_length=1, max_length=10)
     output_types: list[str] = Field(min_length=1, max_length=8)
     instructions: str = Field(default="", max_length=2000)
@@ -174,6 +209,7 @@ class TransformRequest(BaseModel):
     summary="Turn training material into summaries, flashcards, FAQs, posts and more",
 )
 async def transform(body: TransformRequest, repo: RepoDep, session: SessionDep) -> dict[str, Any]:
+    """Enqueues async content transformation tasks (e.g. FAQs, flashcards, summaries)."""
     unknown = [t for t in body.output_types if t not in OUTPUT_TYPES]
     if unknown:
         from ..errors import ValidationFailed
@@ -198,4 +234,5 @@ async def transform(body: TransformRequest, repo: RepoDep, session: SessionDep) 
 
 @router.get("/content/output-types", summary="Supported transformation outputs")
 async def output_types() -> list[str]:
+    """Lists available content transformation formats."""
     return OUTPUT_TYPES

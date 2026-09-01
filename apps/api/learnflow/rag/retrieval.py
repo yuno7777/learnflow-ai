@@ -1,8 +1,27 @@
-"""Hybrid retrieval + grounded answering.
+"""Hybrid retrieval and grounded RAG answer generation.
 
-Retrieval fuses dense vector search with a keyword pass over chunk text (reciprocal rank
-fusion). Dense search alone misses exact identifiers — policy numbers, error codes, product
-SKUs — which is exactly what people search internal training material for.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file implements the retrieval and question-answering core of LearnFlow AI:
+1. `retrieve()`: Executes hybrid retrieval combining:
+   - Dense semantic vector search (ChromaDB cosine query).
+   - Exact keyword search (PostgreSQL `document_chunks.content ILIKE %term%`).
+   - Fuses both rankings using **Reciprocal Rank Fusion** (RRF $k=60$).
+2. Hard Refusal Threshold (`min_score=0.25`): If no chunks pass the minimum similarity
+   threshold, the system halts immediately and returns a standard refusal.
+   (Zero tokens spent calling the generation model!).
+3. `build_context()`: Formats retrieved passages into numbered citation blocks:
+   `[1] (employee_handbook.pdf, page 4, section: Leave Policy) ...`
+4. `answer_question()`: Passes formatted context to `RAG_ANSWER` prompt and invokes `AIGateway`.
+
+===============================================================================
+WHY RECIPROCAL RANK FUSION (RRF) OVER PURE DENSE SEARCH?
+===============================================================================
+Dense embeddings excel at conceptual meaning but frequently fail on exact alphanumeric
+tokens (e.g. error code `ERR_4019`, policy code `HR-POL-2026`, product SKUs).
+By combining dense embeddings with exact keyword queries, RRF ensures exact matches
+surface to the top of the citation ranking.
 """
 
 from __future__ import annotations
@@ -23,7 +42,10 @@ from ..config import settings
 from ..models import Document, DocumentChunk
 from .vectorstore import Match, get_vector_store
 
-RRF_K = 60  # standard reciprocal-rank-fusion damping constant
+# Damping constant for Reciprocal Rank Fusion formula
+RRF_K = 60
+
+# Standardized refusal string returned when no relevant context is found
 REFUSAL = (
     "I don't have enough information in this knowledge base to answer that. "
     "Try rephrasing, or upload a document that covers it."
@@ -33,6 +55,7 @@ _WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,}")
 
 @dataclass(slots=True)
 class Citation:
+    """A citation passage returned to the user with exact document and page metadata."""
     chunk_id: str
     document_id: str
     document_name: str
@@ -44,6 +67,7 @@ class Citation:
 
 @dataclass(slots=True)
 class Retrieval:
+    """The complete result of a hybrid retrieval pass."""
     citations: list[Citation]
     confidence: float
     latency_ms: int
@@ -56,6 +80,7 @@ class Retrieval:
 
 @dataclass(slots=True)
 class Answer:
+    """The final grounded answer with citation metadata and AI execution metrics."""
     text: str
     refused: bool
     retrieval: Retrieval
@@ -63,6 +88,7 @@ class Answer:
 
 
 def _keywords(query: str) -> list[str]:
+    """Extracts non-stopword alphanumeric search terms from the query."""
     stop = {"the", "and", "for", "what", "how", "does", "with", "from", "are", "was", "you"}
     seen: list[str] = []
     for word in _WORD.findall(query.lower()):
@@ -79,6 +105,7 @@ async def _keyword_matches(
     document_ids: list[uuid.UUID] | None,
     limit: int,
 ) -> list[str]:
+    """Queries PostgreSQL `document_chunks` for exact keyword substring matches (`ILIKE`)."""
     terms = _keywords(query)
     if not terms:
         return []
@@ -94,6 +121,11 @@ async def _keyword_matches(
 
 
 def _fuse(dense: list[Match], keyword_ids: list[str]) -> list[Match]:
+    """Fuses dense vector results and keyword match IDs using Reciprocal Rank Fusion.
+
+    Formula:
+        Score = sum( 1 / (60 + rank_in_list) )
+    """
     scores: dict[str, float] = {}
     by_id: dict[str, Match] = {}
     for rank, match in enumerate(dense):
@@ -102,8 +134,6 @@ def _fuse(dense: list[Match], keyword_ids: list[str]) -> list[Match]:
     for rank, cid in enumerate(keyword_ids):
         scores[cid] = scores.get(cid, 0.0) + 1.0 / (RRF_K + rank + 1)
     ranked = sorted(scores, key=lambda k: scores[k], reverse=True)
-    # Keyword-only hits have no dense payload; they are dropped rather than fetched again —
-    # a term match with zero semantic similarity is noise more often than signal.
     return [by_id[cid] for cid in ranked if cid in by_id]
 
 
@@ -118,10 +148,21 @@ async def retrieve(
     top_k: int | None = None,
     min_score: float | None = None,
 ) -> Retrieval:
+    """Performs hybrid dense+keyword retrieval against the organization's knowledge base.
+
+    Execution Flow:
+    1. Embeds query text into a vector using `gateway.embed()`.
+    2. Queries ChromaDB for top dense vector matches in `org_<hex>` collection.
+    3. Queries PostgreSQL `document_chunks` for keyword matches.
+    4. Merges scores via Reciprocal Rank Fusion (`_fuse`).
+    5. Filters out chunks below `min_score` (default 0.25).
+    6. Joins matching chunks with `documents` table to retrieve filenames and page numbers.
+    """
     started = time.perf_counter()
     top_k = top_k or settings.retrieval_top_k
     min_score = settings.retrieval_min_score if min_score is None else min_score
 
+    # 1. Generate query embedding
     vectors, _ = await gateway.embed([query], operation="rag_query")
     where: dict[str, Any] = {}
     if knowledge_base_id:
@@ -129,14 +170,18 @@ async def retrieve(
     if document_ids:
         where["document_id"] = [str(d) for d in document_ids]
 
+    # 2. Parallel Dense and Keyword searches
     dense = await get_vector_store().query(
         organization_id, vectors[0], top_k=top_k * 2, where=where or None
     )
     keyword_ids = await _keyword_matches(
         session, organization_id, query, knowledge_base_id, document_ids, top_k * 2
     )
+
+    # 3. Fuse rankings and enforce minimum score threshold
     fused = [m for m in _fuse(dense, keyword_ids) if m.score >= min_score][:top_k]
 
+    # 4. Hydrate citation metadata from PostgreSQL
     citations: list[Citation] = []
     if fused:
         rows = (
@@ -153,7 +198,7 @@ async def retrieve(
         for match in fused:
             entry = by_vector.get(match.id)
             if entry is None:
-                continue  # vector store ahead of Postgres (mid re-index) — skip, don't cite blind
+                continue
             chunk, filename = entry
             citations.append(
                 Citation(
@@ -177,6 +222,7 @@ async def retrieve(
 
 
 def build_context(citations: list[Citation]) -> str:
+    """Formats citations into a numbered block of text with source document and page headers."""
     return "\n\n".join(
         f"[{i}] ({c.document_name}"
         + (f", page {c.page}" if c.page else "")
@@ -196,6 +242,8 @@ async def answer_question(
     document_ids: list[uuid.UUID] | None = None,
     history: list[ChatMessage] | None = None,
 ) -> Answer:
+    """Executes full Grounded RAG Question Answering pipeline."""
+    # 1. Retrieve relevant passages
     retrieval = await retrieve(
         session,
         gateway,
@@ -204,12 +252,16 @@ async def answer_question(
         knowledge_base_id=knowledge_base_id,
         document_ids=document_ids,
     )
+    
+    # 2. Hard refusal gate: if no chunks found, return refusal with ZERO token cost
     if retrieval.is_empty:
-        # Refuse without spending a token — the model has nothing to ground an answer in.
         return Answer(text=REFUSAL, refused=True, retrieval=retrieval, result=None)
 
+    # 3. Render prompt with retrieved citations
     system, user = RAG_ANSWER.render(context=build_context(retrieval.citations), question=question)
     messages = [ChatMessage("system", system), *(history or []), ChatMessage("user", user)]
+    
+    # 4. Generate answer using AI Gateway
     result = await gateway.complete(
         "rag_answer",
         messages,

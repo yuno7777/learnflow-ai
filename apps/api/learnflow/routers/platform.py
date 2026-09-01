@@ -1,4 +1,19 @@
-"""API keys, audit log, background job status and integration health."""
+"""Platform operations: API keys, audit logging, background jobs, and integration health router.
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file provides administrative platform tools:
+1. API Keys (`/api-keys`):
+   - Generates machine API keys (`lf_live_...`).
+   - Secret Masking: Raw secret is returned once on creation (`APIKeyCreated`); only prefix
+     (`lf_live_...`) and SHA-256 hash are stored.
+   - Revocation: Flags `revoked_at = now`.
+2. Audit Trail (`/audit-logs`): Filterable compliance log of security actions across the tenant.
+3. Background Jobs (`/jobs`): Inspects progress, status, and results of async ARQ tasks.
+4. Integrations Health (`/integrations`): Probes connected infrastructure components
+   (LLM provider, Embeddings, ChromaDB vector collection count, Redis connection, n8n cluster health).
+"""
 
 from __future__ import annotations
 
@@ -25,6 +40,10 @@ jobs_router = APIRouter(prefix="/jobs", tags=["platform"])
 integrations_router = APIRouter(prefix="/integrations", tags=["platform"])
 
 
+# -----------------------------------------------------------------------------
+# API Key Management
+# -----------------------------------------------------------------------------
+
 @keys_router.get(
     "",
     response_model=Page[APIKeyOut],
@@ -32,6 +51,7 @@ integrations_router = APIRouter(prefix="/integrations", tags=["platform"])
     summary="List API keys (hashes are never returned)",
 )
 async def list_keys(repo: RepoDep, params: PageParams = Depends(page_params)) -> Page[APIKeyOut]:
+    """Lists machine API keys created for this organization."""
     items, total = await repo.list(
         APIKey, sort=params.sort, limit=params.limit, offset=params.offset
     )
@@ -57,6 +77,7 @@ async def create_key(
     principal: PrincipalDep,
     request: Request,
 ) -> APIKeyCreated:
+    """Generates a new API key. Raw token is returned only once in response."""
     raw, prefix, key_hash = generate_api_key()
     record = repo.add(
         APIKey(
@@ -94,6 +115,7 @@ async def create_key(
 async def revoke_key(
     key_id: uuid.UUID, repo: RepoDep, session: SessionDep, principal: PrincipalDep, request: Request
 ) -> None:
+    """Revokes an API key, immediately blocking all future requests using this token."""
     record = await repo.get(APIKey, key_id)
     if record.revoked_at is not None:
         raise Conflict("Key is already revoked")
@@ -103,6 +125,10 @@ async def revoke_key(
         session, principal, "api_key.revoke", "api_key", str(key_id), request=request
     )
 
+
+# -----------------------------------------------------------------------------
+# Audit Log Endpoints
+# -----------------------------------------------------------------------------
 
 @audit_router.get(
     "",
@@ -116,6 +142,7 @@ async def list_audit(
     action: str | None = Query(None),
     resource_type: str | None = Query(None),
 ) -> Page[AuditLogOut]:
+    """Queries immutable audit trail records with filters on action and entity type."""
     where = []
     if action:
         where.append(AuditLog.action == action)
@@ -132,6 +159,10 @@ async def list_audit(
     )
 
 
+# -----------------------------------------------------------------------------
+# Background Job Status Endpoints
+# -----------------------------------------------------------------------------
+
 @jobs_router.get("", response_model=Page[JobOut], summary="Background jobs")
 async def list_jobs(
     repo: RepoDep,
@@ -139,6 +170,7 @@ async def list_jobs(
     job_status: str | None = Query(None, alias="status"),
     kind: str | None = Query(None),
 ) -> Page[JobOut]:
+    """Lists background jobs from the PostgreSQL ledger."""
     where = []
     if job_status:
         where.append(Job.status == job_status)
@@ -157,11 +189,17 @@ async def list_jobs(
 
 @jobs_router.get("/{job_id}", response_model=JobOut, summary="Job status and progress")
 async def get_job(job_id: uuid.UUID, repo: RepoDep) -> Job:
+    """Returns status, progress percentage, and error messages for a background job."""
     return await repo.get(Job, job_id)
 
 
+# -----------------------------------------------------------------------------
+# Infrastructure Health & Integrations
+# -----------------------------------------------------------------------------
+
 @integrations_router.get("", summary="Connected service health and configuration")
 async def integrations(repo: RepoDep) -> dict[str, dict]:
+    """Pings and reports readiness of connected infrastructure (Redis, ChromaDB, n8n)."""
     try:
         redis_ok = bool(await get_redis().ping())
     except Exception:

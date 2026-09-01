@@ -1,5 +1,27 @@
 "use client";
 
+/**
+ * Application Shell component providing sidebar navigation, multi-tenant workspace switching,
+ * command palette (Cmd+K), review backlog badges, and authentication guards.
+ *
+ * ===============================================================================
+ * WHAT THIS FILE IS RESPONSIBLE FOR:
+ * ===============================================================================
+ * 1. Global Navigation Layout:
+ *    - Desktop: Sticky, independently scrollable sidebar.
+ *    - Mobile: Off-canvas drawer with backdrop blur header.
+ * 2. Backlog Badges:
+ *    - Polls `/api/v1/analytics/evaluations` every 60s to surface unreviewed low-confidence
+ *      quiz evaluations directly in the sidebar on `/dashboard/reviews`.
+ * 3. Organization Switcher (`Select`):
+ *    - When a user belongs to multiple organizations, allows switching active tenant.
+ *    - Updates `tokens.setOrganization(orgId)` in `localStorage` and invalidates React Query cache.
+ * 4. Command Palette (`CommandPalette`):
+ *    - Global `Cmd+K` / `Ctrl+K` modal allowing quick keyboard jump navigation across routes.
+ * 5. Authentication Recovery:
+ *    - Catches 401/403 errors from `useMe()` and redirects to `/login`.
+ */
+
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -10,6 +32,9 @@ import { Badge, Button, Select, Skeleton, cn } from "@/components/ui";
 import { ApiError, api, tokens } from "@/lib/api";
 import type { Me } from "@/lib/types";
 
+/**
+ * Master Navigation Tree grouping routes by feature area.
+ */
 export const NAV: Array<{ group: string; items: Array<{ href: string; label: string }> }> = [
   {
     group: "Overview",
@@ -59,6 +84,9 @@ export const NAV: Array<{ group: string; items: Array<{ href: string; label: str
   },
 ];
 
+/**
+ * React Query hook resolving the current authenticated user and organization memberships.
+ */
 export function useMe() {
   return useQuery({
     queryKey: ["me"],
@@ -68,13 +96,16 @@ export function useMe() {
   });
 }
 
+/**
+ * Main application shell wrapping all authenticated `/dashboard/*` views.
+ */
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const queryClient = useQueryClient();
   const { data: me, isLoading, error } = useMe();
-  // Surfaced in the sidebar: a review backlog is the one thing in this product that
-  // actively blocks a learner from getting their result.
+
+  // Poll pending evaluation review count every 60s
   const reviewQueue = useQuery({
     queryKey: ["analytics", "evaluations"],
     queryFn: () =>
@@ -88,6 +119,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [mobileOpen, setMobileOpen] = React.useState(false);
 
+  // Redirect to login on authentication failure
   React.useEffect(() => {
     if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
       tokens.clear();
@@ -95,6 +127,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
     }
   }, [error, router]);
 
+  // Global Command+K keyboard shortcut listener
   React.useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
@@ -115,11 +148,10 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="flex min-h-screen">
+      {/* Sidebar Navigation */}
       <aside
         className={cn(
           "fixed inset-y-0 left-0 z-40 flex w-60 shrink-0 flex-col border-r border-border bg-card",
-          // Sticky + full viewport height on desktop so the nav scrolls independently of
-          // the page instead of being clipped once it outgrows the screen.
           "transition-transform lg:sticky lg:top-0 lg:h-screen lg:translate-x-0",
           mobileOpen ? "translate-x-0" : "-translate-x-full",
         )}
@@ -172,6 +204,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         </nav>
       </aside>
 
+      {/* Main Content Area */}
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-background/95 px-4 backdrop-blur">
           <Button
@@ -201,8 +234,6 @@ export function Shell({ children }: { children: React.ReactNode }) {
                     className="h-8 max-w-[190px] text-xs"
                     value={me.organization_id}
                     onChange={(event) => {
-                      // The API resolves the tenant from this header and re-checks
-                      // membership, so switching is a client-side header change only.
                       tokens.setOrganization(event.target.value);
                       void queryClient.invalidateQueries();
                       router.refresh();
@@ -238,11 +269,15 @@ export function Shell({ children }: { children: React.ReactNode }) {
         </main>
       </div>
 
+      {/* Command Palette Modal */}
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}
     </div>
   );
 }
 
+/**
+ * Keyboard-driven Command Palette navigation dialog.
+ */
 function CommandPalette({ onClose }: { onClose: () => void }) {
   const router = useRouter();
   const [query, setQuery] = React.useState("");
@@ -301,6 +336,9 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
   );
 }
 
+/**
+ * Standard page heading layout component.
+ */
 export function PageHeader({
   title,
   description,

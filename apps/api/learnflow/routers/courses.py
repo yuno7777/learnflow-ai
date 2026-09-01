@@ -1,4 +1,24 @@
-"""Course generation, editing, review and publishing."""
+"""Course curriculum management, AI generation, editing, and publishing API router.
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file manages courses, modules, and lessons:
+1. `GET /courses`: Lists courses. If the caller is a `Learner`, results are strictly filtered
+   to published courses where the learner holds an active enrollment.
+2. `POST /courses/generate`: Enqueues an async background job (`generate_course`) to create
+   a complete multi-module curriculum grounded in uploaded documents.
+3. `GET /courses/{id}`: Returns course details with eagerly-loaded modules and lessons (`selectinload`).
+4. `PATCH /courses/{id}` & `/lessons/{id}`: Enables manual instructor edits to titles and lesson markdown.
+5. `POST /courses/{id}/modules/{id}/regenerate`: Asynchronously rewrites a single module with AI.
+6. `POST /courses/{id}/publish`: Transitions course from `draft`/`review` to `published`.
+
+===============================================================================
+MULTI-TENANCY & LEARNER SCOPING:
+===============================================================================
+Instructors and admins have full visibility across all draft/review/published courses in the tenant.
+Learners are restricted to `status == 'published'` AND `Enrollment.learner_id == current_learner_id`.
+"""
 
 from __future__ import annotations
 
@@ -31,6 +51,7 @@ router = APIRouter(prefix="/courses", tags=["courses"])
 
 
 async def _detail(session, repo, course: Course) -> CourseDetail:
+    """Helper hydrating course detail with eagerly loaded modules, lessons, and enrollment counts."""
     modules = (
         (
             await session.execute(
@@ -76,10 +97,9 @@ async def list_courses(
     params: PageParams = Depends(page_params),
     course_status: CourseStatus | None = Query(None, alias="status"),
 ) -> Page[CourseOut]:
+    """Lists courses in the tenant, scoped by role (learners only see their enrolled published courses)."""
     where = [Course.status == course_status] if course_status else []
     if principal.is_learner:
-        # Published, and only what they are actually enrolled in - drafts and other
-        # cohorts' courses are not theirs to browse.
         where.append(Course.status == CourseStatus.published)
         where.append(
             Course.id.in_(
@@ -107,6 +127,7 @@ async def list_courses(
     summary="Create an empty course by hand",
 )
 async def create_course(body: CourseCreate, repo: RepoDep, session: SessionDep) -> CourseDetail:
+    """Manually creates an empty course container."""
     course = repo.add(
         Course(
             title=body.title,
@@ -133,6 +154,7 @@ async def generate(
     principal: PrincipalDep,
     request: Request,
 ) -> CourseDetail:
+    """Dispatches an asynchronous AI course generation job grounded in knowledge base documents."""
     await repo.get(KnowledgeBase, body.knowledge_base_id)
     course = repo.add(
         Course(
@@ -172,6 +194,7 @@ async def generate(
 async def get_course(
     course_id: uuid.UUID, repo: RepoDep, session: SessionDep, principal: PrincipalDep
 ) -> CourseDetail:
+    """Fetches full course details including modules and lesson content."""
     course = await repo.get(Course, course_id)
     if principal.is_learner:
         enrolled = await session.scalar(
@@ -194,6 +217,7 @@ async def get_course(
 async def update_course(
     course_id: uuid.UUID, body: CourseUpdate, repo: RepoDep, session: SessionDep
 ) -> CourseDetail:
+    """Updates course title, description, or audience."""
     course = await repo.get(Course, course_id)
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(course, field, value)
@@ -216,6 +240,7 @@ async def publish(
     principal: PrincipalDep,
     request: Request,
 ) -> CourseDetail:
+    """Publishes a course making it accessible to enrolled learners."""
     course = await repo.get(Course, course_id)
     module_count = int(
         await session.scalar(
@@ -249,6 +274,7 @@ async def regenerate_module(
     repo: RepoDep,
     session: SessionDep,
 ) -> dict[str, str]:
+    """Enqueues an async task to rewrite a single module with AI."""
     course = await repo.get(Course, course_id)
     module = await repo.get(Module, module_id)
     if module.course_id != course.id:
@@ -276,6 +302,7 @@ async def regenerate_module(
 async def update_lesson(
     course_id: uuid.UUID, lesson_id: uuid.UUID, body: LessonUpdate, repo: RepoDep
 ) -> Lesson:
+    """Updates lesson content, exercises, or title."""
     await repo.get(Course, course_id)
     lesson = await repo.get(Lesson, lesson_id)
     for field, value in body.model_dump(exclude_unset=True).items():
@@ -297,6 +324,7 @@ async def delete_course(
     principal: PrincipalDep,
     request: Request,
 ) -> None:
+    """Deletes a course, cascading to all associated modules and lessons."""
     course = await repo.get(Course, course_id)
     await repo.delete(course)
     await audit.record(

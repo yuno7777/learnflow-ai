@@ -1,8 +1,25 @@
-"""Background job ledger + ARQ enqueue.
+"""Background job ledger and ARQ Redis queue integration.
 
-Every async unit of work gets a `Job` row *before* it is enqueued, keyed by an idempotency
-key. Enqueuing the same key twice returns the existing job instead of duplicating work — the
-same guarantee the webhook path needs when n8n retries.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file manages asynchronous background task scheduling:
+1. `Job` Database Ledger: Records every async operation in PostgreSQL *before* enqueuing
+   to Redis, guaranteeing auditability even if Redis restarts.
+2. Idempotency Key Deduping: Enqueuing with an existing `idempotency_key` immediately
+   returns the existing Job record without spawning duplicate background work.
+3. ARQ Redis Connection Pool (`get_arq`, `close_arq`): Manages async Redis client for ARQ.
+4. Dual Queue Engine Support:
+   - `redis`: Production mode with ARQ worker processes consuming Redis streams.
+   - `database`: Lightweight single-process mode where `standalone.py` polls PostgreSQL directly.
+5. Lifecycle Helpers: `start()`, `progress()`, `finish()`, `fail()`.
+
+===============================================================================
+WHY DATABASE LEDGER + REDIS QUEUE (Dual-Layer Resilience)?
+===============================================================================
+Relying solely on Redis for background jobs means in-flight jobs can be lost during Redis
+evictions or restarts. By writing a `Job` record to PostgreSQL first, the system maintains
+a permanent audit trail, tracks attempt counts, and can reconcile stuck jobs.
 """
 
 from __future__ import annotations
@@ -25,6 +42,7 @@ _pool: ArqRedis | None = None
 
 
 async def get_arq() -> ArqRedis:
+    """Returns or initializes the singleton ARQ Redis connection pool."""
     global _pool
     if _pool is None:
         _pool = await create_pool(RedisSettings.from_dsn(settings.redis_url))
@@ -32,6 +50,7 @@ async def get_arq() -> ArqRedis:
 
 
 async def close_arq() -> None:
+    """Gracefully closes the ARQ Redis connection pool on application shutdown."""
     global _pool
     if _pool is not None:
         await _pool.close()
@@ -50,11 +69,29 @@ async def enqueue(
     callback_url: str | None = None,
     **task_kwargs: Any,
 ) -> Job:
+    """Creates a Job row in the database ledger and enqueues it to ARQ Redis.
+
+    Args:
+        session: Active database session.
+        organization_id: Target tenant UUID.
+        kind: Task function name (e.g. 'ingest_document', 'run_workflow').
+        idempotency_key: Unique string preventing duplicate task dispatch.
+        resource_type: Optional entity type (e.g. 'document', 'course').
+        resource_id: Optional entity UUID string.
+        max_attempts: Max retry attempts before permanent failure.
+        callback_url: Optional webhook URL to notify upon completion.
+        **task_kwargs: Arguments passed to the worker task function.
+
+    Returns:
+        Job: The created or existing Job model instance.
+    """
+    # 1. Check for existing idempotent job
     existing = await session.scalar(select(Job).where(Job.idempotency_key == idempotency_key))
     if existing is not None:
         log.info("job_idempotent_hit", kind=kind, job_id=str(existing.id))
         return existing
 
+    # 2. Persist new Job record to PostgreSQL ledger
     job = Job(
         organization_id=organization_id,
         kind=kind,
@@ -64,17 +101,16 @@ async def enqueue(
         resource_id=resource_id,
         max_attempts=max_attempts,
         callback_url=callback_url,
-        # Persisted so the database-backed worker can dispatch without Redis, and so the
-        # job ledger shows what a task was actually asked to do.
         payload=task_kwargs,
     )
     session.add(job)
     await session.flush()
 
+    # In database queue mode, the standalone worker picks up jobs from Postgres
     if settings.job_queue == "database":
-        # Single-node mode: the standalone worker claims queued rows by polling.
         return job
 
+    # 3. Enqueue to Redis stream via ARQ
     try:
         arq = await get_arq()
         enqueued = await arq.enqueue_job(
@@ -82,7 +118,6 @@ async def enqueue(
         )
         job.arq_job_id = enqueued.job_id if enqueued else None
     except Exception as exc:
-        # Surface the failure instead of leaving a job "queued" forever with no worker holding it.
         job.status = "failed"
         job.error = f"Could not enqueue: {type(exc).__name__}"
         log.error("job_enqueue_failed", kind=kind, error=str(exc))
@@ -90,6 +125,7 @@ async def enqueue(
 
 
 async def start(session: AsyncSession, job_id: uuid.UUID) -> Job | None:
+    """Marks a job as running, increments attempt counter, and stamps start time."""
     job = await session.get(Job, job_id)
     if job is None:
         return None
@@ -104,6 +140,7 @@ async def start(session: AsyncSession, job_id: uuid.UUID) -> Job | None:
 async def progress(
     session: AsyncSession, job: Job, value: float, message: str | None = None
 ) -> None:
+    """Updates job progress float [0.0, 1.0] and status message."""
     job.progress = max(0.0, min(1.0, value))
     if message:
         job.message = message[:500]
@@ -111,6 +148,7 @@ async def progress(
 
 
 async def finish(session: AsyncSession, job: Job, *, result: dict[str, Any] | None = None) -> None:
+    """Marks a job successfully finished with result dictionary."""
     job.status = "succeeded"
     job.progress = 1.0
     job.result = result or {}
@@ -119,6 +157,7 @@ async def finish(session: AsyncSession, job: Job, *, result: dict[str, Any] | No
 
 
 async def fail(session: AsyncSession, job: Job, error: str) -> None:
+    """Marks a job failed or retrying depending on attempt count."""
     job.status = "failed" if job.attempts >= job.max_attempts else "retrying"
     job.error = error[:2000]
     job.finished_at = datetime.now(UTC)

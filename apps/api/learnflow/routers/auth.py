@@ -1,9 +1,28 @@
-"""Email + password auth issuing short-lived JWTs and rotating refresh tokens.
+"""Authentication and token lifecycle router.
 
-Flow: `POST /auth/register` creates the user, their organization and an org_admin membership.
-`POST /auth/login` returns an access token (30 min) plus a refresh token stored only as a
-SHA-256 hash. `POST /auth/refresh` rotates: the presented token is revoked as it is redeemed,
-so a replayed refresh token fails.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file manages user accounts, sessions, and JWT token issuance:
+1. `POST /auth/register`: Creates a new `User`, provisions their initial `Organization`,
+   and assigns them the `org_admin` role.
+2. `POST /auth/login`: Authenticates email/password (with constant-time verification to
+   prevent user enumeration) and issues a 30-minute JWT + rotating refresh token.
+3. `POST /auth/refresh`: Implements **Single-Use Rotating Refresh Tokens**:
+   - Redeeming a refresh token marks it `revoked_at = now` immediately.
+   - If an attacker intercepts and attempts to reuse a redeemed token, the request fails.
+4. `POST /auth/logout`: Revokes the provided refresh token in the database.
+5. `GET /auth/me`: Returns the authenticated principal's profile, role, organization,
+   resolved permissions, and all tenant memberships.
+
+===============================================================================
+FLOW (Registration & Login):
+===============================================================================
+Client ──► `POST /auth/login` (email, password)
+       ──► `security.verify_password()` (SHA-256 + bcrypt)
+       ──► `create_access_token()` (HS256 JWT, 30 min)
+       ──► `create_refresh_token()` (Saved as SHA-256 hash in DB, raw returned to client)
+       ──► Returns `TokenPair`
 """
 
 from __future__ import annotations
@@ -48,10 +67,12 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 def _slugify(value: str) -> str:
+    """Creates a clean URL slug for a new organization."""
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")[:60] or "org"
 
 
 async def _memberships(session, user: User) -> list[MembershipOut]:
+    """Helper returning all organization memberships for a user."""
     rows = (
         await session.execute(
             select(OrganizationMember, Organization)
@@ -70,7 +91,8 @@ async def _memberships(session, user: User) -> list[MembershipOut]:
     ]
 
 
-async def _issue(session, user: User, organization_id: uuid.UUID, role: Role, request: Request):
+async def _issue(session, user: User, organization_id: uuid.UUID, role: Role, request: Request) -> TokenPair:
+    """Issues an access JWT and records a hashed single-use refresh token."""
     access, expires_in = create_access_token(user.id, organization_id, role.value)
     raw_refresh, token_hash, expires_at = create_refresh_token()
     session.add(
@@ -100,6 +122,7 @@ async def _issue(session, user: User, organization_id: uuid.UUID, role: Role, re
     summary="Create a user and their first organization",
 )
 async def register(body: RegisterRequest, session: SessionDep, request: Request) -> TokenPair:
+    """Registers a new account, creates their initial organization, and returns tokens."""
     existing = await session.scalar(select(User).where(User.email == body.email.lower()))
     if existing is not None:
         raise Conflict("An account with that email already exists")
@@ -135,8 +158,9 @@ async def register(body: RegisterRequest, session: SessionDep, request: Request)
 
 @router.post("/login", response_model=TokenPair, summary="Exchange credentials for tokens")
 async def login(body: LoginRequest, session: SessionDep, request: Request) -> TokenPair:
+    """Authenticates email and password, returning access and refresh tokens."""
     user = await session.scalar(select(User).where(User.email == body.email.lower()))
-    # Same message either way — no account enumeration through the login endpoint.
+    # Return identical error for wrong email or wrong password to prevent account enumeration
     if user is None or not verify_password(body.password, user.password_hash):
         raise Unauthorized("Invalid email or password")
     if not user.is_active:
@@ -180,13 +204,15 @@ async def login(body: LoginRequest, session: SessionDep, request: Request) -> To
 
 @router.post("/refresh", response_model=TokenPair, summary="Rotate a refresh token")
 async def refresh(body: RefreshRequest, session: SessionDep, request: Request) -> TokenPair:
+    """Redeems and rotates a refresh token, issuing a new token pair."""
     token_hash = sha256_hex(body.refresh_token)
     record = await session.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
     now = datetime.now(UTC)
     if record is None or record.revoked_at is not None or (as_utc(record.expires_at) or now) < now:
         raise Unauthorized("Refresh token is invalid or expired")
 
-    record.revoked_at = now  # single use
+    # Mark current token revoked immediately (single-use rotation)
+    record.revoked_at = now
     user = await session.get(User, record.user_id)
     if user is None or not user.is_active:
         raise Unauthorized("Account is disabled")
@@ -200,6 +226,7 @@ async def refresh(body: RefreshRequest, session: SessionDep, request: Request) -
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT, summary="Revoke a refresh token")
 async def logout(body: RefreshRequest, session: SessionDep) -> None:
+    """Revokes the presented refresh token in the database."""
     record = await session.scalar(
         select(RefreshToken).where(RefreshToken.token_hash == sha256_hex(body.refresh_token))
     )
@@ -209,6 +236,7 @@ async def logout(body: RefreshRequest, session: SessionDep) -> None:
 
 @router.get("/me", response_model=MeOut, summary="Current principal, role and permissions")
 async def me(principal: PrincipalDep, session: SessionDep) -> MeOut:
+    """Returns profile and permission metadata for the currently authenticated caller."""
     if principal.user is None:
         raise Unauthorized("API keys have no user profile; use a bearer token")
     return MeOut(

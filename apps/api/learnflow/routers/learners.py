@@ -1,4 +1,25 @@
-"""Learner CRUD, enrolment and progress. Creating a learner emits `learner.created`."""
+"""Learner directory, course enrollment, progress tracking, and portal access router.
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file manages student records and their learning progress:
+1. `POST /learners`: Creates a learner record and automatically emits the `learner.created`
+   event, triggering the onboarding automation workflow.
+2. `GET /learners`: Lists students in the organization (if caller is a student, scoped to self).
+3. `POST /learners/{id}/progress`: Marks individual lessons complete, recalculates percentage
+   progress, and emits `course.completed` when progress reaches 100%.
+4. `POST /learners/enroll`: Bulk enrolls multiple students into a course.
+5. `POST /learners/{id}/access`: Provisions a student login account with `Role.learner`,
+   linking their `Learner` record to a `User` entity for portal authentication.
+
+===============================================================================
+SEPARATION OF CONCERNS (Learner vs User):
+===============================================================================
+In enterprise LMS platforms, thousands of employees are synchronized from an HRIS database
+into `Learner` rows before they ever log in. `grant_access` is the explicit gateway that
+promotes a passive `Learner` into an authenticated `User`.
+"""
 
 from __future__ import annotations
 
@@ -30,6 +51,7 @@ router = APIRouter(prefix="/learners", tags=["learners"])
 
 
 async def _enrollments(session, repo, learner: Learner) -> list[EnrollmentOut]:
+    """Helper returning all active course enrollments and progress for a learner."""
     rows = (
         await session.execute(
             select(Enrollment, Course.title)
@@ -63,9 +85,9 @@ async def list_learners(
     status_filter: str | None = Query(None, alias="status"),
     search: str | None = Query(None, min_length=2),
 ) -> Page[LearnerOut]:
+    """Lists learners in the tenant, with full-text name/email search."""
     where = []
     if principal.is_learner:
-        # A learner's directory is a directory of one.
         where.append(Learner.id == scoped_learner_id(principal, None))
     if status_filter:
         where.append(Learner.status == status_filter)
@@ -96,6 +118,7 @@ async def create_learner(
     principal: PrincipalDep,
     request: Request,
 ) -> LearnerDetail:
+    """Creates a learner record and dispatches the `learner.created` domain event."""
     duplicate = await session.scalar(
         repo.select(Learner).where(Learner.email == body.email.lower())
     )
@@ -127,6 +150,7 @@ async def create_learner(
         request=request,
         details={"email": learner.email},
     )
+    # Dispatch domain event triggering background welcome message and onboarding email
     await events.emit(
         session,
         repo.organization_id,
@@ -148,6 +172,7 @@ async def create_learner(
 async def get_learner(
     learner_id: uuid.UUID, repo: RepoDep, session: SessionDep, principal: PrincipalDep
 ) -> LearnerDetail:
+    """Returns learner profile, active enrollments, and progress."""
     scoped_learner_id(principal, learner_id)
     learner = await repo.get(Learner, learner_id)
     detail = LearnerDetail.model_validate(learner)
@@ -162,6 +187,7 @@ async def get_learner(
     summary="Update a learner",
 )
 async def update_learner(learner_id: uuid.UUID, body: LearnerUpdate, repo: RepoDep) -> Learner:
+    """Updates learner profile information or external HRIS references."""
     learner = await repo.get(Learner, learner_id)
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(learner, field, value)
@@ -182,6 +208,7 @@ async def delete_learner(
     principal: PrincipalDep,
     request: Request,
 ) -> None:
+    """Deletes a learner and cascades to their submissions and enrollments."""
     learner = await repo.get(Learner, learner_id)
     await repo.delete(learner)
     await audit.record(
@@ -195,6 +222,7 @@ async def delete_learner(
     summary="Record learner activity (keeps them out of the inactivity workflow)",
 )
 async def touch_activity(learner_id: uuid.UUID, repo: RepoDep, principal: PrincipalDep) -> Learner:
+    """Updates last active timestamp and resets inactivity reminder count."""
     scoped_learner_id(principal, learner_id)
     learner = await repo.get(Learner, learner_id)
     learner.last_active_at = datetime.now(UTC)
@@ -216,6 +244,7 @@ async def update_progress(
     session: SessionDep,
     principal: PrincipalDep,
 ) -> EnrollmentOut:
+    """Records completion of a lesson, recalculates overall percentage, and fires course completion events."""
     scoped_learner_id(principal, learner_id)
     learner = await repo.get(Learner, learner_id)
     enrollment = await session.scalar(
@@ -249,6 +278,7 @@ async def update_progress(
     enrollment.progress = round(len(completed) / total_lessons, 3) if total_lessons else 0.0
     learner.last_active_at = datetime.now(UTC)
 
+    # If completed all lessons, emit course.completed event
     if enrollment.progress >= 1.0 and enrollment.completed_at is None:
         enrollment.completed_at = datetime.now(UTC)
         enrollment.status = "completed"
@@ -284,6 +314,7 @@ async def update_progress(
 async def bulk_enroll(
     course_id: uuid.UUID, body: EnrollRequest, repo: RepoDep, session: SessionDep
 ) -> list[EnrollmentOut]:
+    """Enrolls multiple learners into a course."""
     course = await repo.get(Course, course_id)
     created: list[EnrollmentOut] = []
     for learner_id in body.learner_ids:
@@ -324,12 +355,7 @@ async def grant_access(
     principal: PrincipalDep,
     request: Request,
 ) -> LearnerAccessResult:
-    """Link a learner record to a user account with the learner role.
-
-    Learner records and login accounts are separate on purpose - most learners in an LMS are
-    imported from an HRIS and never sign in. This is the deliberate step that turns one into
-    someone who can use the portal.
-    """
+    """Provisions a User login account with `Role.learner` linked to this student record."""
     learner = await repo.get(Learner, learner_id)
 
     user = await session.scalar(select(User).where(User.email == learner.email))
@@ -362,7 +388,6 @@ async def grant_access(
             )
         )
     elif membership.role is not Role.learner:
-        # Never quietly demote an instructor who happens to share this email address.
         raise Conflict(
             f"That email already belongs to a {membership.role.value} in this organization"
         )

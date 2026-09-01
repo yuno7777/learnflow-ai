@@ -1,4 +1,29 @@
-"""Assessment generation, learner submissions and AI evaluation review."""
+"""Assessment generation, student submissions, and AI evaluation review API router.
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file manages quizzes, test submissions, and instructor review workflows:
+1. `POST /assessments/generate`: Enqueues an async AI quiz generation job (`generate_assessment`).
+2. `GET /assessments/{id}`: Returns assessment questions.
+   - Answer Key Redaction: `_serialize_question` strips `correct_answer`, `rubric`,
+     `explanation`, and `confidence` unless the caller has `assessment:write` permission
+     and explicitly passes `?include_answers=true`.
+3. `POST /assessments/{id}/submissions`: Submits student answers, validates question IDs,
+   and enqueues the `evaluate_submission` grading job.
+4. `GET /submissions/{id}`: Returns submission details with score breakdown and feedback.
+5. `GET /evaluations/queue`: Lists pending low-confidence evaluations awaiting instructor review.
+6. `POST /evaluations/{id}/review`: Human instructor sign-off:
+   - Security Gate: Rejects machine API keys (`principal.user is None`) to ensure only
+     verified human staff can approve or override grades.
+
+===============================================================================
+HOW IT CONNECTS TO THE REST OF THE PROJECT:
+===============================================================================
+- `services/generation.py`: Generates quiz questions and runs validation filters.
+- `services/evaluation.py`: Auto-grades objective questions and runs LLM rubric scoring.
+- `worker/tasks.py`: Executes grading as background task.
+"""
 
 from __future__ import annotations
 
@@ -35,17 +60,23 @@ from ..services.evaluation import review_evaluation
 
 router = APIRouter(prefix="/assessments", tags=["assessments"])
 submissions_router = APIRouter(prefix="/submissions", tags=["assessments"])
+evaluations_router = APIRouter(prefix="/evaluations", tags=["assessments"])
 
 ANSWER_KEY_FIELDS = ("correct_answer", "explanation", "source_reference", "confidence", "rubric")
 
 
 def _serialize_question(question: Question, *, include_answers: bool) -> QuestionOut:
+    """Serializes a Question, redacting answer keys if caller is not authorized."""
     data = QuestionOut.model_validate(question)
     if not include_answers:
         for field in ANSWER_KEY_FIELDS:
             setattr(data, field, None)
     return data
 
+
+# -----------------------------------------------------------------------------
+# Assessment Endpoints
+# -----------------------------------------------------------------------------
 
 @router.get("", response_model=Page[AssessmentOut], summary="List assessments")
 async def list_assessments(
@@ -54,6 +85,7 @@ async def list_assessments(
     params: PageParams = Depends(page_params),
     course_id: uuid.UUID | None = Query(None),
 ) -> Page[AssessmentOut]:
+    """Lists assessments, filtering unpublished items for student accounts."""
     where = [Assessment.course_id == course_id] if course_id else []
     if principal.is_learner:
         where.append(Assessment.is_published.is_(True))
@@ -82,6 +114,7 @@ async def generate(
     principal: PrincipalDep,
     request: Request,
 ) -> AssessmentDetail:
+    """Enqueues async AI quiz question generation grounded in knowledge base documents."""
     await repo.get(KnowledgeBase, body.knowledge_base_id)
     assessment = repo.add(
         Assessment(
@@ -123,6 +156,7 @@ async def get_assessment(
     principal: PrincipalDep,
     include_answers: bool = Query(False, description="Answer key — instructors and reviewers only"),
 ) -> AssessmentDetail:
+    """Fetches assessment questions, redacting correct answers unless authorized."""
     assessment = await repo.get(Assessment, assessment_id)
     if principal.is_learner and not assessment.is_published:
         raise NotFound("Assessment not found")
@@ -142,6 +176,7 @@ async def get_assessment(
     summary="Publish an assessment to learners",
 )
 async def publish(assessment_id: uuid.UUID, repo: RepoDep) -> Assessment:
+    """Publishes an assessment quiz so students can take it."""
     assessment = await repo.get(Assessment, assessment_id)
     if not assessment.questions:
         raise Conflict("Cannot publish an assessment with no questions")
@@ -149,6 +184,10 @@ async def publish(assessment_id: uuid.UUID, repo: RepoDep) -> Assessment:
     await repo.flush()
     return assessment
 
+
+# -----------------------------------------------------------------------------
+# Submission Endpoints
+# -----------------------------------------------------------------------------
 
 @router.post(
     "/{assessment_id}/submissions",
@@ -164,10 +203,10 @@ async def submit(
     principal: PrincipalDep,
     request: Request,
 ) -> SubmissionDetail:
+    """Submits student answers and dispatches async background grading job."""
     assessment = await repo.get(Assessment, assessment_id)
     if not assessment.is_published:
         raise Conflict("Assessment is not published")
-    # A learner submitting for somebody else is the obvious abuse here.
     target = scoped_learner_id(principal, body.learner_id)
     if target is None:
         raise ValidationFailed("A submission must name a learner")
@@ -213,6 +252,7 @@ async def list_submissions(
     learner_id: uuid.UUID | None = Query(None),
     submission_status: str | None = Query(None, alias="status"),
 ) -> Page[SubmissionOut]:
+    """Lists assessment submissions, scoped by role."""
     where = []
     learner_id = scoped_learner_id(principal, learner_id)
     if assessment_id:
@@ -238,6 +278,7 @@ async def list_submissions(
 async def get_submission(
     submission_id: uuid.UUID, repo: RepoDep, principal: PrincipalDep
 ) -> SubmissionDetail:
+    """Fetches a submission and its auto-graded evaluation breakdown."""
     submission = await repo.get(Submission, submission_id)
     scoped_learner_id(principal, submission.learner_id)
     detail = SubmissionDetail(**SubmissionOut.model_validate(submission).model_dump())
@@ -246,8 +287,9 @@ async def get_submission(
     return detail
 
 
-evaluations_router = APIRouter(prefix="/evaluations", tags=["assessments"])
-
+# -----------------------------------------------------------------------------
+# Evaluation & HITL Review Endpoints
+# -----------------------------------------------------------------------------
 
 @evaluations_router.get(
     "", response_model=Page[EvaluationOut], summary="List evaluations (filter for the review queue)"
@@ -257,6 +299,7 @@ async def list_evaluations(
     params: PageParams = Depends(page_params),
     needs_review: bool | None = Query(None),
 ) -> Page[EvaluationOut]:
+    """Lists evaluation records, with optional filtering for items requiring human review."""
     where = []
     if needs_review is not None:
         where.append(Evaluation.requires_human_review.is_(needs_review))
@@ -285,6 +328,7 @@ async def review(
     principal: PrincipalDep,
     request: Request,
 ) -> Evaluation:
+    """Applies human instructor approval or manual score adjustment to an AI evaluation."""
     evaluation = await repo.get(Evaluation, evaluation_id)
     if evaluation.status in (EvaluationStatus.pending, EvaluationStatus.failed):
         raise Conflict("Evaluation has not produced a result yet")
@@ -315,6 +359,7 @@ async def review(
     "/queue", response_model=list[EvaluationOut], summary="Evaluations awaiting human review"
 )
 async def review_queue(repo: RepoDep, session: SessionDep) -> list[Evaluation]:
+    """Returns the queue of low-confidence evaluations awaiting instructor review."""
     rows = (
         (
             await session.execute(

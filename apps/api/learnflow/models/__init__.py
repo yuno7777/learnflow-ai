@@ -1,3 +1,5 @@
+"""Database model exports. Re-exports all domain entities and utility functions."""
+
 from .ai import (
     Conversation,
     LLMCall,

@@ -1,4 +1,24 @@
-"""RAG assistant: grounded question answering plus conversation history."""
+"""Direct Grounded RAG Query and Conversation History API router.
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file powers direct administrative and instructor RAG queries:
+1. `POST /rag/query`: Executes hybrid dense + keyword search over documents, fuses
+   via Reciprocal Rank Fusion, checks the refusal threshold (0.25), and generates
+   grounded responses with full citation lists and cost/latency metrics.
+2. Conversation History Slicing (`HISTORY_TURNS = 6`): Retains the most recent 6 chat
+   turns to maintain conversational context while preventing context bloat.
+3. `GET /conversations` & `GET /conversations/{id}`: Inspects past RAG conversation threads.
+4. `POST /conversations/{id}/messages/{id}/feedback`: Records user ratings (1-5 stars or thumbs up/down)
+   for AI observability and RLHF analytics.
+
+===============================================================================
+HOW IT CONNECTS TO THE REST OF THE PROJECT:
+===============================================================================
+- `rag/retrieval.py`: Calls `answer_question()` which runs RRF search and refusal gating.
+- `ai/gateway.py`: Tracks token usage, latency, and estimated USD cost on `LLMCall`.
+"""
 
 from __future__ import annotations
 
@@ -25,7 +45,7 @@ from ..schemas.knowledge import (
 
 router = APIRouter(tags=["rag"])
 
-HISTORY_TURNS = 6
+HISTORY_TURNS = 6  # Number of recent messages retained in context window
 
 
 @router.post(
@@ -41,6 +61,7 @@ async def query(
     principal: PrincipalDep,
     request: Request,
 ) -> RagAnswer:
+    """Executes a hybrid RAG query against documents and returns a cited, grounded answer."""
     gateway = AIGateway(
         session,
         repo.organization_id,
@@ -48,6 +69,7 @@ async def query(
         request_id=getattr(request.state, "request_id", None),
     )
 
+    # 1. Fetch or create conversation thread
     conversation = (
         await repo.get(Conversation, body.conversation_id) if body.conversation_id else None
     )
@@ -68,6 +90,7 @@ async def query(
 
     repo.add(Message(conversation_id=conversation.id, role="user", content=body.question))
 
+    # 2. Execute Grounded RAG answering
     result = await answer_question(
         session,
         gateway,
@@ -78,6 +101,8 @@ async def query(
         history=history,
     )
     citations = [CitationOut(**asdict(c)) for c in result.retrieval.citations]
+    
+    # 3. Record assistant message and citations
     assistant = repo.add(
         Message(
             conversation_id=conversation.id,
@@ -112,6 +137,7 @@ async def query(
 async def list_conversations(
     repo: RepoDep, params: PageParams = Depends(page_params)
 ) -> Page[ConversationOut]:
+    """Lists conversations in the current tenant."""
     items, total = await repo.list(
         Conversation, sort=params.sort, limit=params.limit, offset=params.offset
     )
@@ -129,6 +155,7 @@ async def list_conversations(
     summary="Conversation with full message history",
 )
 async def get_conversation(conversation_id: uuid.UUID, repo: RepoDep) -> ConversationDetail:
+    """Returns conversation thread and all chronological messages."""
     conversation = await repo.get(Conversation, conversation_id)
     detail = ConversationDetail.model_validate(conversation)
     detail.messages = [MessageOut.model_validate(m) for m in conversation.messages]
@@ -143,6 +170,7 @@ async def get_conversation(conversation_id: uuid.UUID, repo: RepoDep) -> Convers
 async def rate_message(
     conversation_id: uuid.UUID, message_id: uuid.UUID, body: FeedbackIn, repo: RepoDep
 ) -> None:
+    """Records user quality rating on an assistant answer."""
     await repo.get(Conversation, conversation_id)
     message = await repo.get(Message, message_id)
     message.feedback = body.rating

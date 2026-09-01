@@ -1,4 +1,22 @@
-"""Audit log writer. Never receives secret material — callers pass ids and labels only."""
+"""Audit logging service for compliance and security forensics.
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file records security-sensitive actions across the platform:
+1. `record()`: Appends an immutable `AuditLog` row to the database.
+2. Captures Actor Identity: Records whether the action was taken by a human `User`,
+   a machine `APIKey`, a `Learner`, or a background `System` task.
+3. Captures Request Context: Extracts client IP address and correlation `request_id`.
+4. Secret Scrubbing: Callers pass entity IDs and labels only—raw API keys or passwords
+   are never accepted.
+
+===============================================================================
+WHERE THIS IS CALLED FROM:
+===============================================================================
+- `routers/auth.py`: On login, logout, API key creation, and API key revocation.
+- `routers/courses.py`, `routers/knowledge.py`: On document and course deletions.
+"""
 
 from __future__ import annotations
 
@@ -22,6 +40,21 @@ async def record(
     request: Request | None = None,
     details: dict[str, Any] | None = None,
 ) -> AuditLog:
+    """Records an audit log entry for a platform action.
+
+    Args:
+        session: Active database session.
+        principal: Authenticated caller principal (or None for system events).
+        action: Action name (e.g. 'auth.login', 'apikey.create', 'course.delete').
+        resource_type: Target entity type (e.g. 'course', 'apikey', 'document').
+        resource_id: Optional UUID string of the affected entity.
+        organization_id: Explicit tenant override.
+        request: FastAPI HTTP request to extract IP address and request ID.
+        details: Optional non-sensitive JSON metadata dictionary.
+
+    Returns:
+        AuditLog: The added AuditLog entity.
+    """
     entry = AuditLog(
         organization_id=organization_id or (principal.organization_id if principal else None),
         actor_type=principal.actor_type if principal else "system",

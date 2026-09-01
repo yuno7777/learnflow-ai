@@ -1,11 +1,22 @@
-"""Database-backed worker: `python -m learnflow.worker.standalone`.
+"""Database-backed standalone background worker (Zero-Redis deployment mode).
 
-Single-node mode for deployments without Redis. It polls the `jobs` ledger for queued rows,
-claims one at a time and dispatches to the same task functions the ARQ worker uses — the task
-code is shared, only the transport differs.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file provides a self-contained background task executor for deployments without Redis:
+1. PostgreSQL Polling (`_claim`): Polls the `jobs` ledger table for queued or retrying jobs.
+2. Safe Concurrency (`FOR UPDATE SKIP LOCKED`): In PostgreSQL, locks claimed rows so multiple
+   worker processes can poll the same table without race conditions or duplicate task executions.
+3. Task Dispatch (`run_forever`): Dispatches claimed jobs to the exact same task functions
+   (`worker/tasks.py`) used by the ARQ Redis worker.
+4. Graceful Shutdown (`_install_signal_handlers`): Captures `SIGINT` / `SIGTERM` and finishes
+   the current in-flight job before disposing database engines.
 
-`ponytail: polling, not LISTEN/NOTIFY. One row at a time, one worker at a time. Fine for a
-single node; if you need throughput or several workers, run Redis and use the ARQ worker.`
+===============================================================================
+HOW IT IS STARTED:
+===============================================================================
+CLI Command: `python -m learnflow.worker.standalone`
+Usage: Ideal for local development, embedded edge deployments, or minimal cloud footprints.
 """
 
 from __future__ import annotations
@@ -28,9 +39,10 @@ from . import tasks
 
 log = get_logger("worker")
 
-POLL_SECONDS = 1.0
-RETRY_BACKOFF_SECONDS = 15
+POLL_SECONDS = 1.0            # Polling frequency interval
+RETRY_BACKOFF_SECONDS = 15    # Minimum wait time before picking up a retrying job
 
+# Dispatch map linking job kind strings to async task functions
 HANDLERS: dict[str, Any] = {
     "ingest_document": tasks.ingest_document,
     "generate_course": tasks.generate_course,
@@ -45,7 +57,7 @@ _stopping = asyncio.Event()
 
 
 async def _claim() -> tuple[str, str, str, dict[str, Any]] | None:
-    """Take the oldest runnable job and mark it running, so a second poll cannot re-claim it."""
+    """Claims the oldest runnable job from the database using row-level locking."""
     async with session_scope() as session:
         retry_cutoff = datetime.now(UTC) - timedelta(seconds=RETRY_BACKOFF_SECONDS)
         statement = (
@@ -61,18 +73,19 @@ async def _claim() -> tuple[str, str, str, dict[str, Any]] | None:
             .limit(1)
         )
         if session.bind is not None and session.bind.dialect.name == "postgresql":
-            # Row-level lock so several workers can share one queue table safely.
+            # SKIP LOCKED allows multiple worker processes to claim different jobs simultaneously
             statement = statement.with_for_update(skip_locked=True)
         job = await session.scalar(statement)
         if job is None:
             return None
-        # Claim it here; the task's own `start()` flips it to running again and counts the
-        # attempt. Marking it now is what stops the next poll picking up the same row.
+        
+        # Mark running immediately to prevent subsequent polls from picking up this row
         job.status = "running"
         return str(job.id), str(job.organization_id), job.kind, dict(job.payload or {})
 
 
 async def run_forever() -> None:
+    """Main worker event loop: continuously polls and executes claimed jobs."""
     log.info(
         "standalone_worker_started",
         queue=settings.job_queue,
@@ -112,12 +125,11 @@ async def run_forever() -> None:
             await handler({}, job_id, organization_id, **payload)
             log.info("job_succeeded", kind=kind, job_id=job_id)
         except Exception as exc:
-            # The task already recorded the failure on the ledger row inside its own
-            # transaction; this is only the worker-level log line.
             log.error("job_failed", kind=kind, job_id=job_id, error=str(exc)[:300])
 
 
 def _install_signal_handlers(loop: asyncio.AbstractEventLoop) -> None:
+    """Installs POSIX and Windows signal handlers for graceful shutdown."""
     def stop(*_: object) -> None:
         log.info("standalone_worker_stopping")
         loop.call_soon_threadsafe(_stopping.set)
@@ -130,6 +142,7 @@ def _install_signal_handlers(loop: asyncio.AbstractEventLoop) -> None:
 
 
 async def main() -> None:
+    """Standalone worker application bootstrap."""
     configure_logging(json_output=settings.environment != "development")
     _install_signal_handlers(asyncio.get_running_loop())
     try:

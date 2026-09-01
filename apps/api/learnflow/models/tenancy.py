@@ -1,4 +1,30 @@
-"""Users, organizations, workspaces, membership and roles."""
+"""Users, organizations, workspaces, membership, and role-based access control (RBAC).
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file defines the identity and tenancy database models:
+1. `Role`: Enum of supported platform roles (`platform_admin`, `org_admin`, `instructor`,
+   `reviewer`, `support_agent`, `learner`).
+2. `ROLE_PERMISSIONS`: A capability lookup mapping permission strings to allowed roles.
+3. `User`: Global user account model (email, password hash, platform admin status).
+4. `Organization`: Tenant container model (name, slug, billing plan, settings).
+5. `OrganizationMember`: Many-to-many relationship linking a `User` to an `Organization`
+   with a specific `Role`.
+6. `Workspace`: Optional logical grouping within an organization (e.g. departments).
+7. `Learner`: Represents a student/learner profile within an organization.
+   (Linked to a `User` when the learner is given interactive portal login credentials).
+
+===============================================================================
+HOW IT CONNECTS TO THE REST OF THE PROJECT:
+===============================================================================
+- `deps.py`: Resolves `Principal` and enforces permission checks using `ROLE_PERMISSIONS`.
+- `routers/auth.py`: Creates `User`, `Organization`, and `OrganizationMember(role=org_admin)`
+  upon registration.
+- `routers/learners.py` & `routers/organizations.py`: Manage learner invitations, member roles,
+  and tenant settings.
+- `models/learning.py`: `Enrollment` and `Submission` reference `learners.id`.
+"""
 
 from __future__ import annotations
 
@@ -14,17 +40,22 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Entity, TenantEntity
 
 
+# -----------------------------------------------------------------------------
+# Role Definitions & Permissions Map
+# -----------------------------------------------------------------------------
+
 class Role(str, enum.Enum):
-    platform_admin = "platform_admin"
-    org_admin = "org_admin"
-    instructor = "instructor"
-    reviewer = "reviewer"
-    support_agent = "support_agent"
-    learner = "learner"
+    """System roles representing distinct user personas and permission levels."""
+    platform_admin = "platform_admin"  # Superuser with global access across all tenants
+    org_admin = "org_admin"            # Tenant administrator (manages members, billing, API keys)
+    instructor = "instructor"          # Course creator (authors content, generates quizzes)
+    reviewer = "reviewer"              # Human evaluator (grades flagged assessments)
+    support_agent = "support_agent"    # Helpdesk operator (manages tickets)
+    learner = "learner"                # Student portal user (read-only courses, submits quizzes)
 
 
-# Coarse capability model: a permission is granted if the member's role appears here.
-# Kept as data rather than a permissions table — there is exactly one product using it.
+# Coarse capability model: maps fine-grained action strings to sets of allowed roles.
+# Used by `deps.require("permission:name")` to guard API endpoints.
 ROLE_PERMISSIONS: dict[str, set[Role]] = {
     "org:manage": {Role.platform_admin, Role.org_admin},
     "member:manage": {Role.platform_admin, Role.org_admin},
@@ -61,7 +92,12 @@ RoleEnum = SAEnum(
 )
 
 
+# -----------------------------------------------------------------------------
+# Database Models
+# -----------------------------------------------------------------------------
+
 class User(Entity):
+    """Global user table. A user exists globally and can belong to multiple organizations."""
     __tablename__ = "users"
 
     email: Mapped[str] = mapped_column(String(320), unique=True, nullable=False, index=True)
@@ -77,6 +113,7 @@ class User(Entity):
 
 
 class Organization(Entity):
+    """Tenant organization boundary. All courses, documents, and workflows belong to an org."""
     __tablename__ = "organizations"
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -94,6 +131,10 @@ class Organization(Entity):
 
 
 class OrganizationMember(Entity):
+    """Association table linking a User to an Organization with an assigned Role.
+
+    Enforces uniqueness on `(organization_id, user_id)` so a user has one role per organization.
+    """
     __tablename__ = "organization_members"
     __table_args__ = (UniqueConstraint("organization_id", "user_id", name="uq_member_org_user"),)
 
@@ -110,6 +151,7 @@ class OrganizationMember(Entity):
 
 
 class Workspace(TenantEntity):
+    """Optional departmental/team division within an organization."""
     __tablename__ = "workspaces"
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -120,6 +162,11 @@ class Workspace(TenantEntity):
 
 
 class Learner(TenantEntity):
+    """Student profile within an organization.
+
+    May exist without a user login (e.g. imported from HRIS/CSV).
+    When portal access is provisioned, `user_id` is linked to a `User` record.
+    """
     __tablename__ = "learners"
 
     email: Mapped[str] = mapped_column(String(320), nullable=False, index=True)

@@ -1,4 +1,23 @@
-"""API keys, audit log and the background job ledger."""
+"""API keys, audit logging, refresh tokens, and the background job ledger.
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file defines system-level operational and authentication models:
+1. `APIKey`: Machine integration credentials, storing SHA-256 hash and display prefix.
+2. `AuditLog`: Immutable record of sensitive actions performed by users/API keys.
+3. `RefreshToken`: Single-use rotating refresh tokens stored as SHA-256 hashes.
+4. `Job`: Persistent state and progress tracking ledger for all background tasks
+   (ingestion, generation, evaluation, workflows).
+
+===============================================================================
+HOW IT CONNECTS TO THE REST OF THE PROJECT:
+===============================================================================
+- `routers/auth.py`: Creates, queries, and revokes `RefreshToken` rows during login/refresh.
+- `routers/platform.py`: Manages `APIKey` and queries `Job` status.
+- `services/audit.py`: Writes `AuditLog` rows when significant mutations occur.
+- `services/jobs.py` & `worker/tasks.py`: Update `Job` status, progress, and results.
+"""
 
 from __future__ import annotations
 
@@ -23,6 +42,7 @@ from .base import Entity, TenantEntity
 
 
 class APIKey(TenantEntity):
+    """Machine authentication key (e.g. `lf_...`) used by external scripts and n8n."""
     __tablename__ = "api_keys"
 
     name: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -38,9 +58,10 @@ class APIKey(TenantEntity):
 
 
 class AuditLog(TenantEntity):
+    """Immutable audit trail recording administrative actions (user invites, course publishing)."""
     __tablename__ = "audit_logs"
 
-    actor_type: Mapped[str] = mapped_column(String(20), nullable=False)  # user|api_key|system
+    actor_type: Mapped[str] = mapped_column(String(20), nullable=False)  # "user" | "api_key" | "system"
     actor_id: Mapped[str | None] = mapped_column(String(64))
     actor_label: Mapped[str | None] = mapped_column(String(200))
     action: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
@@ -52,6 +73,7 @@ class AuditLog(TenantEntity):
 
 
 class RefreshToken(Entity):
+    """Single-use rotating refresh token for issuing new access JWTs."""
     __tablename__ = "refresh_tokens"
 
     user_id: Mapped[uuid.UUID] = mapped_column(
@@ -64,8 +86,10 @@ class RefreshToken(Entity):
 
 
 class Job(TenantEntity):
-    """Ledger for background work. The ARQ job id is the primary handle."""
+    """Database ledger for tracking background task status, progress, and errors.
 
+    Used by ARQ workers and standalone pollers to persist job state independently of Redis.
+    """
     __tablename__ = "jobs"
     __table_args__ = (UniqueConstraint("idempotency_key", name="uq_job_idempotency"),)
 
@@ -81,7 +105,6 @@ class Job(TenantEntity):
     max_attempts: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     error: Mapped[str | None] = mapped_column(Text)
     result: Mapped[dict[str, Any]] = mapped_column(default=dict, nullable=False)
-    # Task kwargs, so the database-backed worker can dispatch without Redis.
     payload: Mapped[dict[str, Any]] = mapped_column(default=dict, nullable=False)
     callback_url: Mapped[str | None] = mapped_column(String(500))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

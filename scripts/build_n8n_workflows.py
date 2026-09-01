@@ -1,10 +1,26 @@
-"""Generates the exportable n8n workflow JSON files in automation/n8n-workflows/.
+"""Build script generating standard n8n workflow JSON blueprints in `automation/n8n-workflows/`.
 
-They are generated rather than hand-edited because five workflows share the same signature
-verification, callback signing and HTTP node shape — keeping that in one place means a change
-to the signing scheme cannot drift between files.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This script automates the generation of importable n8n workflow JSON definitions:
+1. DRY Security Implementation:
+   - Shared JavaScript code snippets (`VERIFY_JS` and `SIGN_JS`) are injected into every
+     generated n8n workflow file.
+   - Ensures HMAC-SHA256 signature verification and callback signing logic is identical
+     across all workflows, preventing configuration drift.
+2. Five Core Automation Pipelines:
+   - `01-learner-onboarding.json`: Welcome email generation upon student creation.
+   - `02-inactive-learner-reminder.json`: Scheduled daily cron sweep for inactive learners.
+   - `03-support-ticket-triage.json`: AI classification and suggested answer drafting.
+   - `04-document-processed.json`: Ingestion notification or automatic retry trigger.
+   - `05-weekly-analytics-summary.json`: Monday morning executive KPI email digest.
 
-Run: python scripts/build_n8n_workflows.py
+===============================================================================
+RUNNING THIS SCRIPT:
+===============================================================================
+`python scripts/build_n8n_workflows.py`
+Generates clean JSON documents inside `automation/n8n-workflows/`.
 """
 
 from __future__ import annotations
@@ -14,6 +30,7 @@ import pathlib
 
 OUT = pathlib.Path(__file__).resolve().parent.parent / "automation" / "n8n-workflows"
 
+# Node.js snippet verifying incoming LearnFlow HMAC-SHA256 webhook signatures
 VERIFY_JS = """// Verify the LearnFlow HMAC signature over the RAW request body.
 // Header form: t=<unix>,v1=<hex>;  mac = HMAC_SHA256(secret, `${t}.${rawBody}`)
 const crypto = require('crypto');
@@ -33,6 +50,7 @@ if (!parts.v1 || expected.length !== parts.v1.length ||
 }
 return [{ json: item.body }];"""
 
+# Node.js snippet generating outbound LearnFlow HMAC-SHA256 callback signatures
 SIGN_JS = """// Sign the callback body so FastAPI can verify this came from n8n.
 const crypto = require('crypto');
 const body = JSON.stringify($input.first().json);
@@ -53,6 +71,7 @@ SIGNED_HEADERS = [
 
 
 def node(name, type_, params, pos, version=1):
+    """Constructs an individual n8n workflow node dictionary."""
     return {
         "parameters": params,
         "id": name.lower().replace(" ", "-").replace(":", "").replace("?", ""),
@@ -64,6 +83,7 @@ def node(name, type_, params, pos, version=1):
 
 
 def http(name, url, pos, method="POST", body=None, headers=None, send_body=True):
+    """Constructs an HTTP request node."""
     params = {
         "method": method,
         "url": url,
@@ -83,10 +103,12 @@ def http(name, url, pos, method="POST", body=None, headers=None, send_body=True)
 
 
 def code(name, js, pos):
+    """Constructs a JavaScript Code execution node."""
     return node(name, "n8n-nodes-base.code", {"jsCode": js}, pos, 2)
 
 
 def webhook(name, path, pos):
+    """Constructs an incoming Webhook trigger node."""
     return node(
         name,
         "n8n-nodes-base.webhook",
@@ -102,6 +124,7 @@ def webhook(name, path, pos):
 
 
 def respond(name, pos):
+    """Constructs a Webhook response node."""
     return node(
         name,
         "n8n-nodes-base.respondToWebhook",
@@ -115,6 +138,7 @@ def respond(name, pos):
 
 
 def email(name, to, subject, text, pos):
+    """Constructs an Email sending node."""
     return node(
         name,
         "n8n-nodes-base.emailSend",
@@ -131,6 +155,7 @@ def email(name, to, subject, text, pos):
 
 
 def if_node(name, left, right, pos, op_type="number", operation="lt"):
+    """Constructs a conditional branching node."""
     return node(
         name,
         "n8n-nodes-base.if",
@@ -154,6 +179,7 @@ def if_node(name, left, right, pos, op_type="number", operation="lt"):
 
 
 def callback_builder(steps, output, pos):
+    """Constructs JavaScript node formatting step execution results for FastAPI callback."""
     js = (
         "return [{ json: {\n"
         "  execution_id: $('Verify signature').first().json.execution_id,\n"
@@ -167,6 +193,7 @@ def callback_builder(steps, output, pos):
 
 
 def chain(*names):
+    """Helper connecting nodes sequentially in a linear chain."""
     return {
         a: {"main": [[{"node": b, "type": "main", "index": 0}]]}
         for a, b in zip(names, names[1:], strict=False)
@@ -174,6 +201,7 @@ def chain(*names):
 
 
 def branch(name, true_node, false_node):
+    """Helper connecting true and false branches of an if_node."""
     return {
         name: {
             "main": [
@@ -185,6 +213,7 @@ def branch(name, true_node, false_node):
 
 
 def save(filename, name, nodes, connections, tags):
+    """Serializes and writes n8n workflow JSON document."""
     OUT.mkdir(parents=True, exist_ok=True)
     doc = {
         "name": name,
@@ -212,6 +241,7 @@ API = "={{ $env.LEARNFLOW_API_URL }}"
 
 
 def build_onboarding():
+    """Generates the learner onboarding workflow JSON."""
     nodes = [
         webhook("Webhook: learner created", "learnflow/learner-onboarding", [-520, 300]),
         code("Verify signature", VERIFY_JS, [-300, 300]),
@@ -269,6 +299,7 @@ def build_onboarding():
 
 
 def build_inactivity():
+    """Generates the inactive learner reminder cron workflow JSON."""
     nodes = [
         node(
             "Every day at 07:00",
@@ -330,6 +361,7 @@ def build_inactivity():
 
 
 def build_triage():
+    """Generates the support ticket triage workflow JSON."""
     nodes = [
         webhook("Webhook: ticket created", "learnflow/ticket-triage", [-520, 300]),
         code("Verify signature", VERIFY_JS, [-300, 300]),
@@ -386,6 +418,7 @@ def build_triage():
 
 
 def build_document_processed():
+    """Generates the document processed notification workflow JSON."""
     nodes = [
         webhook("Webhook: document indexed", "learnflow/document-processed", [-520, 300]),
         code("Verify signature", VERIFY_JS, [-300, 300]),
@@ -433,6 +466,7 @@ def build_document_processed():
 
 
 def build_weekly_summary():
+    """Generates the weekly analytics email digest workflow JSON."""
     digest_js = """const overview = $('Fetch overview').first().json;
 const usage = $('Fetch AI usage').first().json;
 const flows = $('Fetch workflow stats').first().json;

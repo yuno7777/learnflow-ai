@@ -1,8 +1,27 @@
-"""Built-in workflow runners.
+"""Built-in Python workflow runners (fallback and local execution engine).
 
-These mirror the exported n8n workflows step for step (`automation/n8n-workflows/*.json`) and
-run when n8n is not configured or unreachable. Keeping them in Python means the demo, the
-tests and CI never depend on a live n8n instance, while production still routes through n8n.
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file implements the built-in Python workflow execution handlers.
+Each runner mirrors the exact steps of the corresponding exportable n8n workflow:
+1. `learner_onboarding`: Generates welcome AI message, enrolls student, sends welcome email,
+   builds onboarding checklist, and schedules reminders.
+2. `inactive_reminder`: Queries quiet learners past inactivity threshold and sends AI nudges.
+3. `ticket_triage`: Retrieves knowledge base citations, classifies ticket sentiment/urgency,
+   drafts an AI response, and sets escalation flags for low-confidence tickets.
+4. `document_processed`: Sends completion notifications to admins.
+5. `course_completion`: Delivers congratulatory completion emails.
+6. `assessment_review`: Alerts instructors when evaluations fall below 0.75 confidence.
+7. `weekly_summary`: Aggregates active learners, tokens, and USD costs into a weekly digest.
+
+===============================================================================
+WHY DUAL-EXECUTION (n8n Webhooks + Python Runners)?
+===============================================================================
+In production, organizations can visually customize workflows in n8n.
+However, if the n8n cluster is offline, unconfigured, or during CI/CD test runs,
+`automation/engine.py` seamlessly falls back to these deterministic Python runners,
+guaranteeing that core LMS operations never halt.
 """
 
 from __future__ import annotations
@@ -34,6 +53,7 @@ from ..rag.retrieval import build_context, retrieve
 from .email import get_email_adapter
 from .engine import StepRecorder
 
+# Standard onboarding checklist tasks
 ONBOARDING_CHECKLIST = [
     "Complete your profile",
     "Read the welcome guide",
@@ -43,6 +63,7 @@ ONBOARDING_CHECKLIST = [
 
 
 async def _require_learner(session: AsyncSession, execution: WorkflowExecution) -> Learner:
+    """Helper to validate and retrieve the target Learner from database."""
     learner_id = execution.learner_id or execution.input_payload.get("learner_id")
     if not learner_id:
         raise ValueError("Workflow payload has no learner_id")
@@ -52,7 +73,9 @@ async def _require_learner(session: AsyncSession, execution: WorkflowExecution) 
     return learner
 
 
-# --------------------------------------------------------------------------- onboarding
+# -----------------------------------------------------------------------------
+# 1. Learner Onboarding Runner
+# -----------------------------------------------------------------------------
 async def learner_onboarding(
     session: AsyncSession,
     execution: WorkflowExecution,
@@ -60,8 +83,10 @@ async def learner_onboarding(
     gateway: AIGateway,
     recorder: StepRecorder,
 ) -> dict[str, Any]:
+    """Executes the 6-step onboarding workflow for new learners."""
     result: dict[str, Any] = {}
 
+    # Step 1: Validation
     async with recorder.step("validate_learner", "validation") as step:
         learner = await _require_learner(session, execution)
         org = await session.get(Organization, execution.organization_id)
@@ -71,6 +96,7 @@ async def learner_onboarding(
             raise ValueError("Course belongs to another organization")
         step.output = {"learner": learner.email, "course": course.title if course else None}
 
+    # Step 2: AI Welcome Message Generation
     async with recorder.step("generate_welcome_message", "ai") as step:
         system, user = WELCOME_MESSAGE.render(
             learner_name=learner.full_name,
@@ -87,6 +113,7 @@ async def learner_onboarding(
         result["welcome_message"] = ai.text
         step.output = {"chars": len(ai.text), "model": ai.model, "cost_usd": ai.estimated_cost_usd}
 
+    # Step 3: Database Enrollment
     async with recorder.step("enrol_learner", "database") as step:
         if course is not None:
             existing = await session.scalar(
@@ -107,6 +134,7 @@ async def learner_onboarding(
         else:
             step.output = {"enrolled": False, "reason": "no course supplied"}
 
+    # Step 4: Email Dispatch
     async with recorder.step("send_welcome_email", "email") as step:
         sent = await get_email_adapter().send(
             learner.email,
@@ -115,6 +143,7 @@ async def learner_onboarding(
         )
         step.output = {"to": sent.to, "adapter": get_email_adapter().name}
 
+    # Step 5: Onboarding Checklist Initialization
     async with recorder.step("create_onboarding_checklist", "database") as step:
         learner.profile = {
             **learner.profile,
@@ -125,6 +154,7 @@ async def learner_onboarding(
         await session.flush()
         step.output = {"items": len(ONBOARDING_CHECKLIST)}
 
+    # Step 6: Schedule Future Reminders
     async with recorder.step("schedule_reminders", "schedule") as step:
         due = [(datetime.now(UTC) + timedelta(days=d)).isoformat() for d in (3, 7, 14)]
         learner.profile = {**learner.profile, "reminder_schedule": due}
@@ -136,7 +166,9 @@ async def learner_onboarding(
     return result
 
 
-# --------------------------------------------------------------------------- reminders
+# -----------------------------------------------------------------------------
+# 2. Inactive Learner Reminder Runner
+# -----------------------------------------------------------------------------
 async def inactive_reminder(
     session: AsyncSession,
     execution: WorkflowExecution,
@@ -144,12 +176,14 @@ async def inactive_reminder(
     gateway: AIGateway,
     recorder: StepRecorder,
 ) -> dict[str, Any]:
+    """Sweeps for inactive students and sends AI-personalized re-engagement emails."""
     config = workflow.config or {}
     threshold = int(config.get("inactivity_days", 14))
     max_reminders = int(config.get("max_reminders", 3))
     tone = str(config.get("tone", "supportive"))
     cutoff = datetime.now(UTC) - timedelta(days=threshold)
 
+    # Step 1: Find Inactive Learners
     async with recorder.step("find_inactive_learners", "database") as step:
         candidates = list(
             (
@@ -167,6 +201,7 @@ async def inactive_reminder(
         )
         step.output = {"count": len(candidates), "threshold_days": threshold}
 
+    # Step 2: Generate and Send Personalized Nudges
     sent, failed = [], []
     for learner in candidates[: int(config.get("batch_limit", 25))]:
         try:
@@ -201,13 +236,14 @@ async def inactive_reminder(
                 sent.append(learner.email)
                 step.output = {"days_inactive": days, "reminder_number": learner.reminders_sent}
         except Exception as exc:
-            # One learner failing must not abort the batch; the step row already records why.
             failed.append({"learner": learner.email, "error": str(exc)[:200]})
 
     return {"sent": sent, "failed": failed, "threshold_days": threshold}
 
 
-# --------------------------------------------------------------------------- ticket triage
+# -----------------------------------------------------------------------------
+# 3. Support Ticket Triage Runner
+# -----------------------------------------------------------------------------
 async def ticket_triage(
     session: AsyncSession,
     execution: WorkflowExecution,
@@ -215,6 +251,7 @@ async def ticket_triage(
     gateway: AIGateway,
     recorder: StepRecorder,
 ) -> dict[str, Any]:
+    """Classifies support tickets and drafts grounded responses."""
     ticket_id = execution.input_payload.get("ticket_id")
     if not ticket_id:
         raise ValueError("Workflow payload has no ticket_id")
@@ -222,6 +259,7 @@ async def ticket_triage(
     if ticket is None or ticket.organization_id != execution.organization_id:
         raise ValueError("Ticket not found in this organization")
 
+    # Step 1: Retrieve Grounded Passages
     async with recorder.step("retrieve_knowledge", "rag") as step:
         retrieval = await retrieve(
             session,
@@ -232,6 +270,7 @@ async def ticket_triage(
         )
         step.output = {"citations": len(retrieval.citations), "confidence": retrieval.confidence}
 
+    # Step 2: AI Classification & Response Drafting
     async with recorder.step("classify_ticket", "ai") as step:
         system, user = TICKET_TRIAGE.render(
             subject=ticket.subject,
@@ -254,6 +293,7 @@ async def ticket_triage(
             "confidence": triage.confidence,
         }
 
+    # Step 3: Database Ticket Update & Escalation Routing
     async with recorder.step("route_ticket", "database") as step:
         low_confidence = triage.confidence < float(
             (workflow.config or {}).get("min_confidence", 0.6)
@@ -282,7 +322,10 @@ async def ticket_triage(
     }
 
 
-# --------------------------------------------------------------------------- misc templates
+# -----------------------------------------------------------------------------
+# 4. Other Workflow Runners
+# -----------------------------------------------------------------------------
+
 async def document_processed(
     session: AsyncSession,
     execution: WorkflowExecution,
@@ -290,6 +333,7 @@ async def document_processed(
     gateway: AIGateway,
     recorder: StepRecorder,
 ) -> dict[str, Any]:
+    """Notifies administrators when document indexing finishes."""
     document_id = execution.input_payload.get("document_id")
     async with recorder.step("load_document", "database") as step:
         document = await session.get(Document, uuid.UUID(str(document_id))) if document_id else None
@@ -317,6 +361,7 @@ async def course_completion(
     gateway: AIGateway,
     recorder: StepRecorder,
 ) -> dict[str, Any]:
+    """Sends congratulatory completion certificates to learners."""
     async with recorder.step("load_enrollment", "database") as step:
         learner = await _require_learner(session, execution)
         course_id = execution.course_id or execution.input_payload.get("course_id")
@@ -340,6 +385,7 @@ async def assessment_review(
     gateway: AIGateway,
     recorder: StepRecorder,
 ) -> dict[str, Any]:
+    """Alerts instructors to review low-confidence AI evaluations."""
     async with recorder.step("collect_pending_reviews", "database") as step:
         pending = list(
             (
@@ -376,6 +422,7 @@ async def weekly_summary(
     gateway: AIGateway,
     recorder: StepRecorder,
 ) -> dict[str, Any]:
+    """Compiles a weekly usage and cost digest for the organization."""
     from ..models import LLMCall
 
     since = datetime.now(UTC) - timedelta(days=7)
@@ -414,6 +461,7 @@ async def weekly_summary(
     return metrics
 
 
+# Registry mapping template names to execution functions
 RUNNERS: dict[str, Any] = {
     "learner_onboarding": learner_onboarding,
     "inactive_reminder": inactive_reminder,
@@ -424,6 +472,7 @@ RUNNERS: dict[str, Any] = {
     "weekly_summary": weekly_summary,
 }
 
+# Template metadata definitions for workflow provisioning
 TEMPLATES: dict[str, dict[str, Any]] = {
     "learner_onboarding": {
         "name": "New learner onboarding",

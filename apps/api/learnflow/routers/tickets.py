@@ -1,4 +1,26 @@
-"""Support tickets. Creating one emits `ticket.created`, which drives the triage workflow."""
+"""Support ticket creation, AI triage event dispatch, and resolution router.
+
+===============================================================================
+WHAT THIS FILE IS RESPONSIBLE FOR:
+===============================================================================
+This file manages learner support requests and automated AI triage:
+1. `POST /tickets`: Creates a support ticket and automatically emits the `ticket.created`
+   event to trigger the `ticket_triage` automation workflow in the background.
+2. `GET /tickets`: Lists tickets with filtering on category, status, and escalation flag.
+3. `GET /tickets/{id}`: Returns ticket details including AI-classified category, urgency,
+   sentiment, confidence score, and drafted reply.
+4. `PATCH /tickets/{id}`: Updates status to `resolved` or `closed`, stamping `resolved_at`.
+
+===============================================================================
+EVENT-DRIVEN FLOW (Ticket Triage):
+===============================================================================
+Learner Creates Ticket ──► `POST /tickets`
+  ──► `events.emit("ticket.created")`
+  ──► ARQ Worker executes `automation/runners.py:ticket_triage`
+  ──► RAG Search over Knowledge Base
+  ──► LLM classifies urgency/sentiment and drafts reply
+  ──► Ticket row updated with AI suggestions in seconds.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +47,7 @@ async def list_tickets(
     category: str | None = Query(None),
     escalated: bool | None = Query(None),
 ) -> Page[TicketOut]:
+    """Lists support tickets with optional filters on category, status, or escalation."""
     where = []
     if ticket_status:
         where.append(SupportTicket.status == ticket_status)
@@ -56,6 +79,7 @@ async def create_ticket(
     principal: PrincipalDep,
     request: Request,
 ) -> SupportTicket:
+    """Creates a new support ticket and dispatches the background AI triage event."""
     ticket = repo.add(
         SupportTicket(subject=body.subject, body=body.body, learner_id=body.learner_id)
     )
@@ -63,6 +87,7 @@ async def create_ticket(
     await audit.record(
         session, principal, "ticket.create", "support_ticket", str(ticket.id), request=request
     )
+    # Trigger background triage workflow to categorize and draft reply
     if body.triage:
         await events.emit(
             session,
@@ -77,6 +102,7 @@ async def create_ticket(
 
 @router.get("/{ticket_id}", response_model=TicketOut, summary="Ticket detail with AI decision")
 async def get_ticket(ticket_id: uuid.UUID, repo: RepoDep) -> SupportTicket:
+    """Returns ticket details and AI triage suggestions."""
     return await repo.get(SupportTicket, ticket_id)
 
 
@@ -87,6 +113,7 @@ async def get_ticket(ticket_id: uuid.UUID, repo: RepoDep) -> SupportTicket:
     summary="Update ticket status, category or assignment",
 )
 async def update_ticket(ticket_id: uuid.UUID, body: TicketUpdate, repo: RepoDep) -> SupportTicket:
+    """Updates ticket status or assigns human support staff."""
     ticket = await repo.get(SupportTicket, ticket_id)
     for field, value in body.model_dump(exclude_unset=True).items():
         setattr(ticket, field, value)
