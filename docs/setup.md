@@ -2,15 +2,31 @@
 
 ## Option A — Docker (recommended)
 
-Requires Docker 24+ with Compose v2.
+Install Python 3.11+ and Docker Compose v2. Use Docker Desktop on Windows (WSL 2
+backend) or macOS, and Docker Engine with the Compose plugin on Linux. Start Docker
+before running the bootstrap.
 
-```bash
-cp .env.example .env
-docker compose up --build
-docker compose exec api python -m learnflow.seed
+Windows PowerShell:
+
+```powershell
+py -3 scripts/dev.py up
 ```
 
-`docker compose up` brings up seven services in dependency order. The `migrate` service runs
+macOS and Linux:
+
+```sh
+python3 scripts/dev.py up
+```
+
+Run the command from the checkout. It creates `.env` with randomly generated
+local secrets on first use, builds the services, and waits for startup. It reuses
+an existing `.env`. To validate separately, run the same launcher with `init`
+followed by `doctor` to check Docker connectivity and Compose configuration.
+
+To load demo data into a local development stack, run
+`docker compose exec api python -m learnflow.seed`.
+
+The `migrate` service runs
 `alembic upgrade head` and must complete before `api` starts; `api` must pass its health
 check before `worker` and `web` start.
 
