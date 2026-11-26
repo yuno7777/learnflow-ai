@@ -20,9 +20,11 @@ Next.js 15 (App Router, TS)  ──REST/SSE──►  FastAPI  ──►  Postgr
 ```bash
 git clone https://github.com/yuno7777/learnflow-ai.git
 cd learnflow-ai
-cp .env.example .env
-docker compose up --build
+python scripts/dev.py up
 ```
+
+Use `py -3 scripts/dev.py up` in Windows PowerShell or `python3 scripts/dev.py up`
+on macOS or Linux if `python` is unavailable. Install Python 3.11+ and Docker Compose v2 first.
 
 Seven services come up: `postgres`, `redis`, `chromadb`, `api`, `worker`, `web`, `n8n`.
 Dependency ordering is enforced with real health checks, and migrations run as their own
