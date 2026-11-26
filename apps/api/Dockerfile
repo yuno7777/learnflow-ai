@@ -13,9 +13,9 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Dependency layer first so source edits do not invalidate the wheel cache.
-COPY pyproject.toml ./
+COPY pyproject.toml constraints.txt ./
 COPY learnflow/__init__.py ./learnflow/__init__.py
-RUN pip install --upgrade pip && pip install -e .
+RUN pip install --upgrade pip && pip install -c constraints.txt -e .
 
 COPY . .
 
