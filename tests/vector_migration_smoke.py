@@ -27,6 +27,13 @@ async def verify():
                 PRIMARY KEY (tenant, id)
             )
         """)
+        try:
+            await copy_collection(collection, connection, UUID(int=2))
+        except ValueError as exc:
+            assert "tenant" in str(exc)
+        else:
+            raise AssertionError("Accepted a collection from another tenant")
+        assert await connection.fetchval("SELECT count(*) FROM pg_temp.chunks") == 0
         for _ in range(2):
             copied = await copy_collection(collection, connection, tenant, batch_size=1)
             assert copied == 1
