@@ -7,6 +7,7 @@ from uuid import UUID
 import asyncpg
 import chromadb
 
+from learnflow.rag.vector_migration import copy_collection
 from learnflow.rag.vectorstore import collection_name
 
 
@@ -26,13 +27,10 @@ async def verify():
                 PRIMARY KEY (tenant, id)
             )
         """)
-        rows = zip(source["ids"], source["documents"], source["metadatas"],
-                   source["embeddings"], strict=True)
-        for record_id, body, metadata, embedding in rows:
-            await connection.execute(
-                "INSERT INTO chunks VALUES ($1, $2, $3, $4, $5)",
-                tenant, record_id, body, json.dumps(metadata), json.dumps(list(map(float, embedding))),
-            )
+        for _ in range(2):
+            copied = await copy_collection(collection, connection, tenant, batch_size=1)
+            assert copied == 1
+        assert await connection.fetchval("SELECT count(*) FROM pg_temp.chunks") == 1
         query = """
             SELECT id, body, metadata, embedding::text AS embedding
             FROM chunks WHERE tenant = $1 ORDER BY embedding <=> $2::vector LIMIT 1
