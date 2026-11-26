@@ -1,0 +1,48 @@
+name: Vector storage persistence
+on: [pull_request, push]
+permissions:
+  contents: read
+jobs:
+  persistence:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CHROMA_HOST: 127.0.0.1
+      CHROMA_PORT: "8001"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install ./apps/api
+      - run: cp .env.example .env
+      - run: docker compose up -d --wait chromadb
+      - name: Store a training document chunk
+        run: |
+          python - <<'PY'
+          import asyncio
+          from uuid import UUID
+          from learnflow.rag.vectorstore import ChromaVectorStore, VectorRecord
+          record = VectorRecord(id="handbook:0", embedding=[1.0, 0.0], text="Training starts Monday.", metadata={"page": 3})
+          asyncio.run(ChromaVectorStore().upsert(UUID(int=1), [record]))
+          PY
+      - run: docker compose up -d --force-recreate --wait chromadb
+      - name: Verify persisted content and citation metadata
+        run: |
+          python - <<'PY'
+          import asyncio
+          from uuid import UUID
+          from learnflow.rag.vectorstore import ChromaVectorStore
+
+          async def verify():
+              store = ChromaVectorStore()
+              matches = await store.query(UUID(int=1), [1.0, 0.0], top_k=1)
+              assert len(matches) == 1
+              match = matches[0]
+              assert (match.id, match.text, match.metadata["page"]) == ("handbook:0", "Training starts Monday.", 3)
+              assert await store.count(UUID(int=2)) == 0
+
+          asyncio.run(verify())
+          PY
+      - if: failure()
+        run: docker compose logs chromadb
