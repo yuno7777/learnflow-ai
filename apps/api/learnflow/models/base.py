@@ -10,9 +10,11 @@ ORM models in LearnFlow AI:
 2. `UUIDPrimaryKey`: Mixin that gives tables a UUIDv4 primary key (`id`).
 3. `Timestamped`: Mixin providing timezone-aware `created_at` and `updated_at` timestamps.
 4. `TenantScoped`: Mixin establishing mandatory multi-tenancy. It adds an `organization_id`
-   foreign key (with cascading deletes) and creates a composite index `(organization_id, created_at)`.
+   foreign key (with cascading deletes) and creates a composite index `(organization_id,
+   created_at)`.
 5. `Entity`: Base class for global models (e.g. `User`, `Organization`).
-6. `TenantEntity`: Base class for all tenant-partitioned models (e.g. `Course`, `Document`, `Assessment`).
+6. `TenantEntity`: Base class for all tenant-partitioned models (e.g. `Course`, `Document`,
+`Assessment`).
 
 ===============================================================================
 HOW IT ENFORCES MULTI-TENANT SECURITY:
@@ -70,8 +72,10 @@ class UUIDPrimaryKey:
 class Timestamped:
     """Mixin adding timezone-aware `created_at` and `updated_at` audit timestamps.
 
-    Uses Python-side defaults (`default=utcnow`) alongside DB server defaults (`server_default=func.now()`)
-    so that newly instantiated Python models have accurate UTC timestamps before being flushed to the database.
+    Uses Python-side defaults (`default=utcnow`) alongside DB server defaults
+    (`server_default=func.now()`)
+    so that newly instantiated Python models have accurate UTC timestamps before being flushed to
+    the database.
     """
 
     created_at: Mapped[datetime] = mapped_column(

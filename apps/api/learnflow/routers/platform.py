@@ -12,7 +12,8 @@ This file provides administrative platform tools:
 2. Audit Trail (`/audit-logs`): Filterable compliance log of security actions across the tenant.
 3. Background Jobs (`/jobs`): Inspects progress, status, and results of async ARQ tasks.
 4. Integrations Health (`/integrations`): Probes connected infrastructure components
-   (LLM provider, Embeddings, ChromaDB vector collection count, Redis connection, n8n cluster health).
+   (LLM provider, Embeddings, ChromaDB vector collection count, Redis connection, n8n cluster
+   health).
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ integrations_router = APIRouter(prefix="/integrations", tags=["platform"])
 # -----------------------------------------------------------------------------
 # API Key Management
 # -----------------------------------------------------------------------------
+
 
 @keys_router.get(
     "",
@@ -130,6 +132,7 @@ async def revoke_key(
 # Audit Log Endpoints
 # -----------------------------------------------------------------------------
 
+
 @audit_router.get(
     "",
     response_model=Page[AuditLogOut],
@@ -162,6 +165,7 @@ async def list_audit(
 # -----------------------------------------------------------------------------
 # Background Job Status Endpoints
 # -----------------------------------------------------------------------------
+
 
 @jobs_router.get("", response_model=Page[JobOut], summary="Background jobs")
 async def list_jobs(
@@ -196,6 +200,7 @@ async def get_job(job_id: uuid.UUID, repo: RepoDep) -> Job:
 # -----------------------------------------------------------------------------
 # Infrastructure Health & Integrations
 # -----------------------------------------------------------------------------
+
 
 @integrations_router.get("", summary="Connected service health and configuration")
 async def integrations(repo: RepoDep) -> dict[str, dict]:

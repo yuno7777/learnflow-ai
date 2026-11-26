@@ -160,6 +160,7 @@ class _Synth:
 
 class MockLLM:
     """Deterministic mock language model implementing the `LLMProvider` protocol."""
+
     name = "mock"
 
     async def complete(
@@ -195,6 +196,7 @@ class MockLLM:
 
 class MockEmbeddings:
     """Deterministic mock embedding provider implementing `EmbeddingProvider` protocol."""
+
     name = "mock"
 
     def __init__(self, dimensions: int = 384) -> None:
@@ -205,7 +207,7 @@ class MockEmbeddings:
         vec = [0.0] * self.dimensions
         tokens = [t for t in _WORD.findall(text.lower()) if t not in _STOPWORDS and len(t) > 2]
         for token in tokens:
-            h = int(hashlib.md5(token.encode()).hexdigest(), 16)
+            h = int(hashlib.md5(token.encode(), usedforsecurity=False).hexdigest(), 16)
             vec[h % self.dimensions] += 1.0
             vec[(h >> 16) % self.dimensions] += 0.5  # Secondary hash to smooth collisions
         norm = math.sqrt(sum(v * v for v in vec)) or 1.0

@@ -91,7 +91,9 @@ async def _memberships(session, user: User) -> list[MembershipOut]:
     ]
 
 
-async def _issue(session, user: User, organization_id: uuid.UUID, role: Role, request: Request) -> TokenPair:
+async def _issue(
+    session, user: User, organization_id: uuid.UUID, role: Role, request: Request
+) -> TokenPair:
     """Issues an access JWT and records a hashed single-use refresh token."""
     access, expires_in = create_access_token(user.id, organization_id, role.value)
     raw_refresh, token_hash, expires_at = create_refresh_token()

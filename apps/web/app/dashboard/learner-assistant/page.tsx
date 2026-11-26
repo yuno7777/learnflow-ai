@@ -41,7 +41,7 @@ interface Turn {
 }
 
 export default function LearnerAssistantPage() {
-  const [learnerId, setLearnerId] = React.useState("");
+  const [selectedLearnerId, setLearnerId] = React.useState("");
   const [question, setQuestion] = React.useState("");
   const [conversationId, setConversationId] = React.useState<string | null>(null);
   const [turns, setTurns] = React.useState<Turn[]>([]);
@@ -51,9 +51,7 @@ export default function LearnerAssistantPage() {
     queryFn: () => api.get<Page<Learner>>("/api/v1/learners", { limit: 100 }),
   });
 
-  React.useEffect(() => {
-    if (!learnerId && learners.data?.items.length) setLearnerId(learners.data.items[0].id);
-  }, [learners.data, learnerId]);
+  const learnerId = selectedLearnerId || learners.data?.items[0]?.id || "";
 
   const ask = useMutation({
     mutationFn: (text: string) =>

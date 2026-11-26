@@ -50,7 +50,7 @@ const ROLES: Role[] = ["org_admin", "instructor", "reviewer", "support_agent", "
 export default function SettingsPage() {
   const queryClient = useQueryClient();
   const me = useMe();
-  const [name, setName] = React.useState("");
+  const [draftName, setDraftName] = React.useState<string | null>(null);
   const [inviteOpen, setInviteOpen] = React.useState(false);
   const [invite, setInvite] = React.useState({
     email: "",
@@ -64,9 +64,7 @@ export default function SettingsPage() {
     queryFn: () => api.get<Organization>("/api/v1/organizations/current"),
   });
 
-  React.useEffect(() => {
-    if (organization.data && !name) setName(organization.data.name);
-  }, [organization.data, name]);
+  const name = draftName ?? organization.data?.name ?? "";
 
   const members = useQuery({
     queryKey: ["members"],
@@ -75,7 +73,9 @@ export default function SettingsPage() {
 
   const rename = useMutation({
     mutationFn: () => api.patch<Organization>("/api/v1/organizations/current", { name }),
-    onSuccess: () => {
+    onSuccess: (updated) => {
+      queryClient.setQueryData(["organization"], updated);
+      setDraftName(null);
       toast.success("Organization updated");
       void queryClient.invalidateQueries({ queryKey: ["organization"] });
     },
@@ -127,8 +127,8 @@ export default function SettingsPage() {
                     <Input
                       id="org-name"
                       value={name}
-                      disabled={!canManage}
-                      onChange={(event) => setName(event.target.value)}
+                      disabled={!canManage || rename.isPending}
+                      onChange={(event) => setDraftName(event.target.value)}
                     />
                   </div>
                   <div className="flex items-center justify-between text-xs">

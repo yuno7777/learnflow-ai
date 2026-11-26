@@ -54,16 +54,6 @@ export default function DashboardPage() {
   const [workspaceId, setWorkspaceId] = React.useState("");
   const [courseId, setCourseId] = React.useState("");
 
-  const dateFrom = React.useMemo(
-    () => new Date(Date.now() - days * 86_400_000).toISOString(),
-    [days],
-  );
-  const filters = {
-    date_from: dateFrom,
-    workspace_id: workspaceId || undefined,
-    course_id: courseId || undefined,
-  };
-
   const workspaces = useQuery({
     queryKey: ["workspaces"],
     queryFn: () => api.get<Page<Workspace>>("/api/v1/workspaces", { limit: 100 }),
@@ -75,7 +65,12 @@ export default function DashboardPage() {
 
   const overview = useQuery({
     queryKey: ["analytics", "overview", days, workspaceId, courseId],
-    queryFn: () => api.get<Overview>("/api/v1/analytics/overview", filters),
+    queryFn: () =>
+      api.get<Overview>("/api/v1/analytics/overview", {
+        date_from: new Date(Date.now() - days * 86_400_000).toISOString(),
+        workspace_id: workspaceId || undefined,
+        course_id: courseId || undefined,
+      }),
   });
   const series = useQuery({
     queryKey: ["analytics", "timeseries", "ai_requests", days],

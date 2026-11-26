@@ -244,7 +244,9 @@ async def update_progress(
     session: SessionDep,
     principal: PrincipalDep,
 ) -> EnrollmentOut:
-    """Records completion of a lesson, recalculates overall percentage, and fires course completion events."""
+    """Records completion of a lesson, recalculates overall percentage, and fires course
+    completion events.
+    """
     scoped_learner_id(principal, learner_id)
     learner = await repo.get(Learner, learner_id)
     enrollment = await session.scalar(

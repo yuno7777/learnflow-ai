@@ -48,13 +48,14 @@ from .errors import Unauthorized
 # 1. Passwords (Pre-hashed SHA-256 + Bcrypt)
 # =============================================================================
 
+
 def _prehash(password: str) -> bytes:
     """Pre-hashes password with SHA-256 before sending to bcrypt.
 
     SECURITY CONCEPT (The Bcrypt 72-byte truncation flaw):
     Standard bcrypt ignores any characters after the 72nd byte of a password.
     If a user enters an 80-character passphrase, the last 8 characters are ignored.
-    
+
     By computing `Base64(SHA256(password))` first, any input length is reduced to a
     uniform 44-character ASCII string, preserving all input entropy while retaining
     bcrypt's memory-hard salt and key-stretching protection.
@@ -162,7 +163,7 @@ def generate_api_key() -> tuple[str, str, str]:
     """Creates a new API key for automated integrations (e.g. n8n, CI/CD).
 
     Format: `lf_<32_byte_urlsafe_token>`
-    
+
     Returns:
         tuple[str, str, str]:
         - raw_key: Shown to the admin once upon creation.
@@ -176,6 +177,7 @@ def generate_api_key() -> tuple[str, str, str]:
 # =============================================================================
 # 4. Webhook Signatures & Replay Prevention
 # =============================================================================
+
 
 def sign_payload(body: bytes, timestamp: int | None = None, secret: str | None = None) -> str:
     """Generates a Stripe-style HMAC-SHA256 signature header for outbound webhooks.
@@ -203,7 +205,8 @@ def verify_signature(body: bytes, header: str, secret: str | None = None) -> str
     Returns:
         str: The valid `v1` HMAC digest string. Downstream routes (`routers/webhooks.py`)
              insert this digest into `webhook_receipts.signature` (unique constraint)
-             to guarantee that a valid webhook payload cannot be replayed twice within the 300s window.
+             to guarantee that a valid webhook payload cannot be replayed twice within the 300s
+             window.
     """
     try:
         parts = dict(part.split("=", 1) for part in header.split(","))
@@ -218,7 +221,7 @@ def verify_signature(body: bytes, header: str, secret: str | None = None) -> str
 
     key = (secret or settings.webhook_signing_secret).encode()
     expected = hmac.new(key, f"{ts}.".encode() + body, hashlib.sha256).hexdigest()
-    
+
     # Constant-time comparison
     if not hmac.compare_digest(expected, provided):
         raise Unauthorized("Signature mismatch")

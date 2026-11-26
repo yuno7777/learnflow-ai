@@ -34,7 +34,7 @@ function DocumentsView() {
   const [offset, setOffset] = React.useState(0);
   const [limit, setLimit] = React.useState(25);
   const fileInput = React.useRef<HTMLInputElement>(null);
-  const [knowledgeBaseId, setKnowledgeBaseId] = React.useState(
+  const [selectedKnowledgeBaseId, setKnowledgeBaseId] = React.useState(
     params.get("knowledge_base_id") ?? "",
   );
 
@@ -43,11 +43,7 @@ function DocumentsView() {
     queryFn: () => api.get<Page<KnowledgeBase>>("/api/v1/knowledge-bases", { limit: 50 }),
   });
 
-  React.useEffect(() => {
-    if (!knowledgeBaseId && bases.data?.items.length) {
-      setKnowledgeBaseId(bases.data.items[0].id);
-    }
-  }, [bases.data, knowledgeBaseId]);
+  const knowledgeBaseId = selectedKnowledgeBaseId || bases.data?.items[0]?.id || "";
 
   const documents = useQuery({
     queryKey: ["documents", knowledgeBaseId, offset, limit],

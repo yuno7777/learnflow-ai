@@ -46,7 +46,7 @@ interface TransformResult {
 }
 
 export default function ContentStudioPage() {
-  const [knowledgeBaseId, setKnowledgeBaseId] = React.useState("");
+  const [selectedKnowledgeBaseId, setKnowledgeBaseId] = React.useState("");
   const [documentIds, setDocumentIds] = React.useState<string[]>([]);
   const [outputTypes, setOutputTypes] = React.useState<string[]>(["short_summary", "faq"]);
   const [instructions, setInstructions] = React.useState("");
@@ -61,9 +61,7 @@ export default function ContentStudioPage() {
     queryFn: () => api.get<Page<KnowledgeBase>>("/api/v1/knowledge-bases", { limit: 50 }),
   });
 
-  React.useEffect(() => {
-    if (!knowledgeBaseId && bases.data?.items.length) setKnowledgeBaseId(bases.data.items[0].id);
-  }, [bases.data, knowledgeBaseId]);
+  const knowledgeBaseId = selectedKnowledgeBaseId || bases.data?.items[0]?.id || "";
 
   const documents = useQuery({
     queryKey: ["documents", knowledgeBaseId, "indexed"],

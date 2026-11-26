@@ -61,12 +61,13 @@ from .vectorstore import VectorRecord, get_vector_store
 
 log = get_logger(__name__)
 
-EMBED_BATCH = 64        # Number of chunks sent per embedding API call
-MIN_CHUNK_CHARS = 40    # Chunks shorter than this after cleaning are discarded
+EMBED_BATCH = 64  # Number of chunks sent per embedding API call
+MIN_CHUNK_CHARS = 40  # Chunks shorter than this after cleaning are discarded
 
 
 class StageFailure(Exception):
     """Custom exception raised when a pipeline stage fails validation or processing."""
+
     def __init__(self, stage: PipelineStage, message: str) -> None:
         super().__init__(message)
         self.stage = stage
@@ -115,7 +116,7 @@ async def run_pipeline(
     document.status = DocumentStatus.processing
     document.error = None
     state: dict[str, Any] = {}
-    
+
     # Map stages to handler functions
     handlers = {
         PipelineStage.upload: _stage_upload,
@@ -149,12 +150,12 @@ async def run_pipeline(
         document.stage = stage
         await session.flush()
         started = time.perf_counter()
-        
+
         # Broadcast stage start over Redis SSE
         await _publish(
             document.id, {"stage": stage.value, "status": "running", "progress": document.progress}
         )
-        
+
         try:
             details = await handlers[stage](session, document, kb, gateway, state)
         except StageFailure as exc:
@@ -205,6 +206,7 @@ async def _finish_run(
 # -----------------------------------------------------------------------------
 # Individual Stage Handlers
 # -----------------------------------------------------------------------------
+
 
 async def _stage_upload(session, document, kb, gateway, state) -> dict[str, Any]:
     """Stage 1: Reads stored file bytes from filesystem storage path."""

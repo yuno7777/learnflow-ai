@@ -34,6 +34,7 @@ log = get_logger(__name__)
 @dataclass(slots=True)
 class SentEmail:
     """Represents a successfully dispatched email notification."""
+
     to: str
     subject: str
     body: str
@@ -42,6 +43,7 @@ class SentEmail:
 
 class EmailAdapter(Protocol):
     """Protocol for transactional email delivery."""
+
     name: str
 
     async def send(self, to: str, subject: str, body: str) -> SentEmail: ...
@@ -49,6 +51,7 @@ class EmailAdapter(Protocol):
 
 class MockEmailAdapter:
     """In-memory outbox that logs messages and stores them in a circular buffer."""
+
     name = "mock"
 
     def __init__(self) -> None:
@@ -65,6 +68,7 @@ class MockEmailAdapter:
 
 class SMTPEmailAdapter:
     """Production email adapter delivering emails via standard SMTP server."""
+
     name = "smtp"
 
     async def send(self, to: str, subject: str, body: str) -> SentEmail:

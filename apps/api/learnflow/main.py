@@ -5,7 +5,8 @@ WHAT THIS FILE IS RESPONSIBLE FOR:
 ===============================================================================
 This file is the main executable entry point for the FastAPI backend. It:
 1. Initializes structured logging on startup.
-2. Defines the `lifespan` context manager to gracefully drain Redis and PostgreSQL pools on shutdown.
+2. Defines the `lifespan` context manager to gracefully drain Redis and PostgreSQL pools on
+shutdown.
 3. Instantiates the `FastAPI` app with metadata and OpenAPI documentation configuration.
 4. Registers the ASGI middleware stack in precise execution order.
 5. Installs global JSON error handlers.
@@ -107,6 +108,7 @@ app.include_router(api_router, prefix=settings.api_v1_prefix)
 # Kubernetes & Monitoring Health Probes
 # -----------------------------------------------------------------------------
 
+
 @app.get("/health", tags=["ops"], summary="Liveness probe")
 async def health() -> dict[str, str]:
     """Kubernetes Liveness Probe: Returns 200 OK if the process is responsive.
@@ -133,7 +135,7 @@ async def ready(response: Response) -> dict[str, object]:
     from .db import session_scope
 
     checks: dict[str, str] = {}
-    
+
     # Check 1: PostgreSQL Connection
     try:
         async with session_scope() as session:

@@ -51,3 +51,6 @@ uploads/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Generated Next.js type declarations
+apps/web/next-env.d.ts

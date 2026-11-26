@@ -54,8 +54,8 @@ from ..models import (
 
 log = get_logger(__name__)
 
-MAX_CONTEXT_CHUNKS = 40       # Maximum document chunks passed in prompt context
-DUPLICATE_THRESHOLD = 0.85    # Levenshtein/SequenceMatcher ratio flagging duplicate questions
+MAX_CONTEXT_CHUNKS = 40  # Maximum document chunks passed in prompt context
+DUPLICATE_THRESHOLD = 0.85  # Levenshtein/SequenceMatcher ratio flagging duplicate questions
 AMBIGUOUS_MARKERS = ("all of the above", "none of the above", "both a and b", "not sure")
 
 
@@ -104,6 +104,7 @@ async def _source_context(
 # -----------------------------------------------------------------------------
 # Course Generation Functions
 # -----------------------------------------------------------------------------
+
 
 async def generate_course(
     session: AsyncSession,
@@ -181,7 +182,9 @@ async def regenerate_module(
     module: Module,
     instructions: str | None,
 ) -> Module:
-    """Regenerates a single module inside an existing course according to custom revision instructions."""
+    """Regenerates a single module inside an existing course according to custom revision
+    instructions.
+    """
     context = await _source_context(
         session, course.organization_id, [uuid.UUID(str(d)) for d in course.source_document_ids]
     )
@@ -229,6 +232,7 @@ async def regenerate_module(
 # -----------------------------------------------------------------------------
 # Assessment Generation & Validation
 # -----------------------------------------------------------------------------
+
 
 def validate_questions(questions: list[Any]) -> dict[str, Any]:
     """Sanity-checks LLM generated questions against rigorous pedagogic quality standards.

@@ -59,7 +59,9 @@ class OpenAICompatibleLLM:
             raise ProviderUnavailable(f"{name}: no API key configured")
 
     def _url(self, path: str, model: str) -> str:
-        """Constructs API endpoint URL depending on whether Azure OpenAI or standard OpenAI is used."""
+        """Constructs API endpoint URL depending on whether Azure OpenAI or standard OpenAI is
+        used.
+        """
         if self.azure:
             return (
                 f"{self.base_url}/openai/deployments/{model}/{path}"
@@ -68,7 +70,9 @@ class OpenAICompatibleLLM:
         return f"{self.base_url}/{path}"
 
     def _headers(self) -> dict[str, str]:
-        """Constructs authentication headers (Azure uses `api-key`, standard uses `Authorization: Bearer`)."""
+        """Constructs authentication headers (Azure uses `api-key`, standard uses
+        `Authorization: Bearer`).
+        """
         return (
             {"api-key": self.api_key or ""}
             if self.azure
@@ -127,7 +131,7 @@ class OpenAICompatibleLLM:
         data = await self._post(self._url("chat/completions", model), body)
         choice = data["choices"][0]
         message = choice["message"]
-        
+
         # Parse function calling tool calls if returned by model
         calls = [
             ToolCall(

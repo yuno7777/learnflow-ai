@@ -49,6 +49,7 @@ workspaces = APIRouter(prefix="/workspaces", tags=["organizations"])
 # Organization & Member Endpoints
 # -----------------------------------------------------------------------------
 
+
 @router.get("/current", response_model=OrganizationOut, summary="The caller's organization")
 async def current(principal: PrincipalDep, session: SessionDep) -> Organization:
     """Returns metadata for the active caller's organization tenant."""
@@ -228,6 +229,7 @@ async def remove_member(
 # -----------------------------------------------------------------------------
 # Workspace Endpoints
 # -----------------------------------------------------------------------------
+
 
 @workspaces.get("", response_model=Page[WorkspaceOut], summary="List workspaces")
 async def list_workspaces(

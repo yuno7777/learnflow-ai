@@ -39,8 +39,8 @@ from . import tasks
 
 log = get_logger("worker")
 
-POLL_SECONDS = 1.0            # Polling frequency interval
-RETRY_BACKOFF_SECONDS = 15    # Minimum wait time before picking up a retrying job
+POLL_SECONDS = 1.0  # Polling frequency interval
+RETRY_BACKOFF_SECONDS = 15  # Minimum wait time before picking up a retrying job
 
 # Dispatch map linking job kind strings to async task functions
 HANDLERS: dict[str, Any] = {
@@ -78,7 +78,7 @@ async def _claim() -> tuple[str, str, str, dict[str, Any]] | None:
         job = await session.scalar(statement)
         if job is None:
             return None
-        
+
         # Mark running immediately to prevent subsequent polls from picking up this row
         job.status = "running"
         return str(job.id), str(job.organization_id), job.kind, dict(job.payload or {})
@@ -130,6 +130,7 @@ async def run_forever() -> None:
 
 def _install_signal_handlers(loop: asyncio.AbstractEventLoop) -> None:
     """Installs POSIX and Windows signal handlers for graceful shutdown."""
+
     def stop(*_: object) -> None:
         log.info("standalone_worker_stopping")
         loop.call_soon_threadsafe(_stopping.set)

@@ -94,10 +94,10 @@ async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
     CRITICAL ARCHITECTURAL DECISION:
     ===========================================================================
     Why does the `commit()` NOT live inside this dependency?
-    
+
     FastAPI runs the cleanup/exit code of `yield` dependencies AFTER the HTTP response
     body has already been streamed to the client network socket.
-    
+
     If `commit()` were placed here:
     1. A user registers via `POST /api/v1/auth/register`.
     2. FastAPI sends `201 Created` with a new JWT token to the client.
@@ -116,7 +116,8 @@ async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
         yield session
         return
 
-    # 2. Fallback path: If middleware is absent (e.g. during specific unit tests or direct ASGI calls),
+    # 2. Fallback path: If middleware is absent (e.g. during specific unit tests or direct ASGI
+    # calls),
     # own the session lifecycle directly here.
     async with get_sessionmaker()() as fallback:
         try:

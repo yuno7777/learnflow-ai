@@ -49,18 +49,19 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import TenantEntity
 
-
 # -----------------------------------------------------------------------------
 # Enums and Pipeline Constants
 # -----------------------------------------------------------------------------
 
+
 class DocumentStatus(str, enum.Enum):
     """High-level processing state of a document."""
-    pending = "pending"        # Uploaded, waiting for worker to claim
+
+    pending = "pending"  # Uploaded, waiting for worker to claim
     processing = "processing"  # Actively running through the 10-stage pipeline
-    indexed = "indexed"        # Successfully parsed, chunked, embedded, and searchable
-    failed = "failed"          # Pipeline failed on a stage (inspect error column)
-    deleted = "deleted"        # Soft-deleted / scheduled for cleanup
+    indexed = "indexed"  # Successfully parsed, chunked, embedded, and searchable
+    failed = "failed"  # Pipeline failed on a stage (inspect error column)
+    deleted = "deleted"  # Soft-deleted / scheduled for cleanup
 
 
 class PipelineStage(str, enum.Enum):
@@ -68,16 +69,17 @@ class PipelineStage(str, enum.Enum):
 
     Each stage is idempotent and retryable from `rag/pipeline.py`.
     """
-    upload = "upload"          # 1. Store raw file bytes on disk
+
+    upload = "upload"  # 1. Store raw file bytes on disk
     validation = "validation"  # 2. Inspect magic bytes & verify SHA-256 checksum
     extraction = "extraction"  # 3. Parse raw text from PDF, DOCX, CSV, Markdown
-    cleaning = "cleaning"      # 4. Unicode normalization, fix hyphenated words, strip noise
-    metadata = "metadata"      # 5. Extract language, word count, document title
-    chunking = "chunking"      # 6. Sentence-aware token budgeting (e.g. 700 tokens + 100 overlap)
-    embedding = "embedding"    # 7. Generate dense vectors via AI Gateway (text-embedding-3-small)
-    indexing = "indexing"      # 8. Upsert vectors to ChromaDB (`org_{hex}`) and chunks to PostgreSQL
-    quality = "quality"        # 9. Quality gate (reject empty chunks or high failure rates)
-    completed = "completed"    # 10. Mark document indexed and update knowledge base statistics
+    cleaning = "cleaning"  # 4. Unicode normalization, fix hyphenated words, strip noise
+    metadata = "metadata"  # 5. Extract language, word count, document title
+    chunking = "chunking"  # 6. Sentence-aware token budgeting (e.g. 700 tokens + 100 overlap)
+    embedding = "embedding"  # 7. Generate dense vectors via AI Gateway (text-embedding-3-small)
+    indexing = "indexing"  # 8. Upsert vectors to ChromaDB (`org_{hex}`) and chunks to PostgreSQL
+    quality = "quality"  # 9. Quality gate (reject empty chunks or high failure rates)
+    completed = "completed"  # 10. Mark document indexed and update knowledge base statistics
 
 
 # Strict execution sequence of the ingestion pipeline
@@ -92,8 +94,10 @@ _enum = lambda e, n: SAEnum(  # noqa: E731
 # Database Models
 # -----------------------------------------------------------------------------
 
+
 class KnowledgeBase(TenantEntity):
     """A logical knowledge base container (e.g. 'Employee Handbook' or 'Sales Training')."""
+
     __tablename__ = "knowledge_bases"
 
     name: Mapped[str] = mapped_column(String(200), nullable=False)
@@ -114,6 +118,7 @@ class KnowledgeBase(TenantEntity):
 
 class Document(TenantEntity):
     """Represents an uploaded source file processed by the system."""
+
     __tablename__ = "documents"
 
     knowledge_base_id: Mapped[uuid.UUID] = mapped_column(
@@ -159,6 +164,7 @@ class DocumentChunk(TenantEntity):
     The actual 1536-dimensional vector embedding is stored in ChromaDB
     keyed by `vector_id` format: `"{document_id}:{position}"`.
     """
+
     __tablename__ = "document_chunks"
     __table_args__ = (UniqueConstraint("document_id", "position", name="uq_chunk_doc_position"),)
 
@@ -183,13 +189,16 @@ class PipelineRun(TenantEntity):
 
     Allows tracking execution duration in milliseconds, error messages, and retry attempts.
     """
+
     __tablename__ = "pipeline_runs"
 
     document_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True
     )
     stage: Mapped[PipelineStage] = mapped_column(_enum(PipelineStage, 20), nullable=False)
-    status: Mapped[str] = mapped_column(String(20), nullable=False)  # "running" | "succeeded" | "failed"
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # "running" | "succeeded" | "failed"
     attempt: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

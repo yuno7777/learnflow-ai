@@ -6,13 +6,15 @@ WHAT THIS FILE IS RESPONSIBLE FOR:
 This file serves all dashboard charts and financial observability metrics:
 1. `GET /analytics/overview`: Headline KPIs across students, completion rates,
    average quiz scores, active tickets, RAG latency, workflow success rates, and token spend.
-2. `GET /analytics/timeseries`: Daily bucketed timeseries for requests, tokens, costs, or executions.
+2. `GET /analytics/timeseries`: Daily bucketed timeseries for requests, tokens, costs, or
+executions.
 3. `GET /analytics/usage`: Deep-dive AI financial breakdown:
    - Grouped by provider & model (e.g. OpenAI `gpt-4o-mini` vs `text-embedding-3-small`).
    - Grouped by operation (`rag_answer`, `course_generate`, `assessment_evaluate`, `ticket_triage`).
    - Failure counts and latency percentiles.
 4. `GET /analytics/workflows`: Per-workflow success/failure rates and average durations.
-5. `GET /analytics/inactive-learners`: Queries quiet students past the threshold for workflow nudges.
+5. `GET /analytics/inactive-learners`: Queries quiet students past the threshold for workflow
+nudges.
 6. `GET /analytics/evaluations`: Instructor review backlog metrics and confidence distributions.
 
 ===============================================================================

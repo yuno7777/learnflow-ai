@@ -37,23 +37,26 @@ log = get_logger(__name__)
 @dataclass(slots=True)
 class VectorRecord:
     """A document chunk embedding prepared for insertion into the vector database."""
-    id: str                        # Formatted as "{document_id}:{position}"
-    embedding: list[float]         # Dense vector (e.g. 1536 floats)
-    text: str                      # Raw text content of the chunk
+
+    id: str  # Formatted as "{document_id}:{position}"
+    embedding: list[float]  # Dense vector (e.g. 1536 floats)
+    text: str  # Raw text content of the chunk
     metadata: dict[str, Any] = field(default_factory=dict)  # Document ID, page, section
 
 
 @dataclass(slots=True)
 class Match:
     """A similarity search result returned by the vector store."""
+
     id: str
     text: str
-    score: float                   # Normalized cosine similarity score in [0.0, 1.0] (1.0 = identical)
+    score: float  # Normalized cosine similarity score in [0.0, 1.0] (1.0 = identical)
     metadata: dict[str, Any]
 
 
 class VectorStore(Protocol):
     """Abstract protocol for vector datastores (ChromaDB, Pinecone, Qdrant, In-Memory)."""
+
     async def upsert(self, organization_id: uuid.UUID, records: list[VectorRecord]) -> None: ...
 
     async def query(
@@ -140,7 +143,10 @@ class ChromaVectorStore:
         top_k: int,
         where: dict[str, Any] | None = None,
     ) -> list[Match]:
-        """Queries ChromaDB collection for nearest neighbors and normalizes distance to similarity."""
+        """Queries ChromaDB collection for nearest neighbors and normalizes distance to
+        similarity.
+        """
+
         def _run() -> Any:
             return self._collection(organization_id).query(
                 query_embeddings=[embedding],

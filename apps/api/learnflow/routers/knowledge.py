@@ -61,6 +61,7 @@ documents_router = APIRouter(prefix="/documents", tags=["documents"])
 # Knowledge Base Endpoints
 # -----------------------------------------------------------------------------
 
+
 @router.get("", response_model=Page[KnowledgeBaseOut], summary="List knowledge bases")
 async def list_kbs(
     repo: RepoDep, params: PageParams = Depends(page_params)
@@ -130,6 +131,7 @@ async def delete_kb(
 # Document Endpoints
 # -----------------------------------------------------------------------------
 
+
 @documents_router.get("", response_model=Page[DocumentOut], summary="List documents")
 async def list_documents(
     repo: RepoDep,
@@ -172,7 +174,7 @@ async def upload_document(
     """Uploads a PDF, DOCX, CSV, or Markdown file and dispatches async background ingestion."""
     kb = await repo.get(KnowledgeBase, knowledge_base_id)
     data = await file.read()
-    
+
     # 1. Validate magic bytes, extensions, and size limits
     suffix = extract_mod.validate_upload(
         file.filename or "upload", file.content_type or "", data, settings.max_upload_bytes

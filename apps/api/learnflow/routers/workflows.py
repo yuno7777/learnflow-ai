@@ -12,7 +12,8 @@ This file manages automation workflows and their runtime execution history:
 4. `GET /executions`: Lists paginated execution records with workflow names and status.
 5. `GET /executions/{id}`: Returns complete execution trace with every recorded `WorkflowStep`.
 6. `POST /executions/{id}/retry`: Re-queues a failed execution with an incremented `retry_count`.
-7. `GET /executions/{id}/stream`: Real-time Server-Sent Events (SSE) streaming of live step transitions
+7. `GET /executions/{id}/stream`: Real-time Server-Sent Events (SSE) streaming of live step
+transitions
    published over Redis channel `learnflow:execution:{id}`.
 
 ===============================================================================
@@ -58,6 +59,7 @@ TERMINAL = {ExecutionStatus.succeeded, ExecutionStatus.failed, ExecutionStatus.c
 # -----------------------------------------------------------------------------
 # Workflow Definition Endpoints
 # -----------------------------------------------------------------------------
+
 
 @router.get("/templates", summary="Available workflow templates")
 async def templates() -> dict[str, dict]:
@@ -182,6 +184,7 @@ async def trigger(
 # -----------------------------------------------------------------------------
 # Execution History & Streaming Endpoints
 # -----------------------------------------------------------------------------
+
 
 @executions_router.get("", response_model=dict, summary="List workflow executions")
 async def list_executions(

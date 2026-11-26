@@ -38,6 +38,7 @@ class ChatMessage:
         tool_call_id: If role is "tool", links the result back to the tool invocation ID.
         name: Function name if providing tool output.
     """
+
     role: str
     content: str
     tool_call_id: str | None = None
@@ -56,6 +57,7 @@ class ChatMessage:
 @dataclass(slots=True)
 class ToolCall:
     """Represents a tool/function call requested by the model during multi-turn assistant chat."""
+
     id: str
     name: str
     arguments: dict[str, Any]
@@ -75,6 +77,7 @@ class Completion:
         tool_calls: List of structured function calls requested by the model.
         raw: Full raw provider API response dictionary for debugging.
     """
+
     text: str
     model: str
     provider: str
@@ -88,6 +91,7 @@ class Completion:
 @dataclass(slots=True)
 class EmbeddingResult:
     """Batch embedding vectors and token usage returned by an embedding provider."""
+
     vectors: list[list[float]]
     model: str
     provider: str
@@ -98,6 +102,7 @@ class EmbeddingResult:
 # Gateway Exceptions
 # -----------------------------------------------------------------------------
 
+
 class ProviderUnavailable(Exception):
     """Transient upstream error (e.g. 502, network timeout, or connection reset).
 
@@ -107,6 +112,7 @@ class ProviderUnavailable(Exception):
 
 class ProviderRateLimited(ProviderUnavailable):
     """Upstream 429 Too Many Requests error with optional `Retry-After` header value."""
+
     def __init__(self, message: str, retry_after: float | None = None) -> None:
         super().__init__(message)
         self.retry_after = retry_after
@@ -116,9 +122,11 @@ class ProviderRateLimited(ProviderUnavailable):
 # Provider Protocols
 # -----------------------------------------------------------------------------
 
+
 @runtime_checkable
 class LLMProvider(Protocol):
     """Protocol for text generation model adapters (OpenAI, Azure, Ollama, Mock)."""
+
     name: str
 
     async def complete(
@@ -136,6 +144,7 @@ class LLMProvider(Protocol):
 @runtime_checkable
 class EmbeddingProvider(Protocol):
     """Protocol for dense vector embedding adapters."""
+
     name: str
     dimensions: int
 

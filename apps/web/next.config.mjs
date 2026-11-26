@@ -2,7 +2,7 @@
 const nextConfig = {
   reactStrictMode: true,
   // The floating dev badge sits bottom-left, directly over the sidebar nav.
-  devIndicators: { appIsrStatus: false, buildActivity: false },
+  devIndicators: false,
   output: "standalone",
   // `next build` writes into the same directory `next dev` serves from, so a verification
   // build run against a live dev server leaves it serving 404s for every chunk. Set

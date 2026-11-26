@@ -10,7 +10,8 @@ This file powers direct administrative and instructor RAG queries:
 2. Conversation History Slicing (`HISTORY_TURNS = 6`): Retains the most recent 6 chat
    turns to maintain conversational context while preventing context bloat.
 3. `GET /conversations` & `GET /conversations/{id}`: Inspects past RAG conversation threads.
-4. `POST /conversations/{id}/messages/{id}/feedback`: Records user ratings (1-5 stars or thumbs up/down)
+4. `POST /conversations/{id}/messages/{id}/feedback`: Records user ratings (1-5 stars or thumbs
+up/down)
    for AI observability and RLHF analytics.
 
 ===============================================================================
@@ -101,7 +102,7 @@ async def query(
         history=history,
     )
     citations = [CitationOut(**asdict(c)) for c in result.retrieval.citations]
-    
+
     # 3. Record assistant message and citations
     assistant = repo.add(
         Message(

@@ -15,7 +15,8 @@ This file creates the master `api_router` and mounts all feature sub-routers:
 - `workflows`, `executions`: Automation workflows, template provisioning, and execution streaming.
 - `tickets`: Support ticket triage and AI drafting.
 - `analytics`: Multi-dimensional metrics (learning, AI costs, workflows, knowledge base usage).
-- `platform` (keys, audit, jobs, integrations): API keys, audit trail, background jobs, system health.
+- `platform` (keys, audit, jobs, integrations): API keys, audit trail, background jobs, system
+health.
 - `webhooks`: Inbound signed n8n callbacks and custom integrations.
 
 ===============================================================================

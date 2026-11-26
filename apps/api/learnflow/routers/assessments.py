@@ -78,6 +78,7 @@ def _serialize_question(question: Question, *, include_answers: bool) -> Questio
 # Assessment Endpoints
 # -----------------------------------------------------------------------------
 
+
 @router.get("", response_model=Page[AssessmentOut], summary="List assessments")
 async def list_assessments(
     repo: RepoDep,
@@ -189,6 +190,7 @@ async def publish(assessment_id: uuid.UUID, repo: RepoDep) -> Assessment:
 # Submission Endpoints
 # -----------------------------------------------------------------------------
 
+
 @router.post(
     "/{assessment_id}/submissions",
     response_model=SubmissionDetail,
@@ -290,6 +292,7 @@ async def get_submission(
 # -----------------------------------------------------------------------------
 # Evaluation & HITL Review Endpoints
 # -----------------------------------------------------------------------------
+
 
 @evaluations_router.get(
     "", response_model=Page[EvaluationOut], summary="List evaluations (filter for the review queue)"
