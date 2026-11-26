@@ -9,6 +9,13 @@ jobs:
     env:
       CHROMA_HOST: 127.0.0.1
       CHROMA_PORT: "8001"
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.1-pg16
+        env:
+          POSTGRES_PASSWORD: vector_ci
+        ports: ["5432:5432"]
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -44,5 +51,9 @@ jobs:
 
           asyncio.run(verify())
           PY
+      - name: Rehearse copying persisted embeddings to PostgreSQL
+        env:
+          VECTOR_TEST_DSN: postgresql://postgres:vector_ci@localhost:5432/postgres
+        run: python tests/vector_migration_smoke.py
       - if: failure()
         run: docker compose logs chromadb
