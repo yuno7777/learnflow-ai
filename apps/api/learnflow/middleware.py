@@ -66,6 +66,7 @@ log = get_logger("http")
 # 1. Request Context & Access Logging Middleware
 # -----------------------------------------------------------------------------
 
+
 class RequestContextMiddleware:
     """Assigns correlation IDs and logs structured access metrics for each HTTP request."""
 
@@ -81,13 +82,13 @@ class RequestContextMiddleware:
         # 1. Extract existing X-Request-ID from client, or generate a fresh UUID4 hex string
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope["headers"]}
         request_id = headers.get("x-request-id") or uuid.uuid4().hex
-        
+
         # 2. Attach request_id to Starlette request.state (accessible via request.state.request_id)
         scope.setdefault("state", {})["request_id"] = request_id
 
         path = scope.get("path", "")
         method = scope.get("method", "")
-        
+
         # 3. Bind request_id and path to Structlog thread-local contextvars
         structlog.contextvars.bind_contextvars(request_id=request_id, path=path)
         started = time.perf_counter()
@@ -118,6 +119,7 @@ class RequestContextMiddleware:
 # -----------------------------------------------------------------------------
 # 2. UnitOfWork Database Transaction Middleware
 # -----------------------------------------------------------------------------
+
 
 class UnitOfWorkMiddleware:
     """Guarantees one database transaction per request, committing BEFORE headers leave.
@@ -195,6 +197,7 @@ class UnitOfWorkMiddleware:
 # -----------------------------------------------------------------------------
 # 3. Redis Fixed-Window Rate Limiting Middleware
 # -----------------------------------------------------------------------------
+
 
 class RateLimitMiddleware:
     """Fixed-window rate limiter utilizing atomic Redis increments.

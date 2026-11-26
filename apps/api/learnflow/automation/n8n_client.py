@@ -34,6 +34,7 @@ log = get_logger(__name__)
 
 class N8NUnavailable(Exception):
     """Raised when the n8n container is offline, unreachable, or returns a 5xx error."""
+
     pass
 
 

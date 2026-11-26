@@ -61,29 +61,32 @@ def _enum(e, n):
 # Enums
 # -----------------------------------------------------------------------------
 
+
 class ExecutionStatus(str, enum.Enum):
-    queued = "queued"                      # Dispatched to ARQ background worker
-    running = "running"                    # In-progress (in n8n or Python runner)
+    queued = "queued"  # Dispatched to ARQ background worker
+    running = "running"  # In-progress (in n8n or Python runner)
     waiting_approval = "waiting_approval"  # Paused awaiting human sign-off
-    succeeded = "succeeded"                # All steps completed successfully
-    failed = "failed"                      # Halted due to an unrecoverable error
-    cancelled = "cancelled"                # Aborted by user
+    succeeded = "succeeded"  # All steps completed successfully
+    failed = "failed"  # Halted due to an unrecoverable error
+    cancelled = "cancelled"  # Aborted by user
 
 
 class TriggerType(str, enum.Enum):
-    manual = "manual"      # Triggered via Dashboard UI button
-    event = "event"        # Triggered by internal domain event (e.g. `learner.created`)
+    manual = "manual"  # Triggered via Dashboard UI button
+    event = "event"  # Triggered by internal domain event (e.g. `learner.created`)
     schedule = "schedule"  # Triggered by worker cron sweep
-    webhook = "webhook"    # Triggered by inbound external HTTP POST
-    api = "api"            # Triggered via direct API call
+    webhook = "webhook"  # Triggered by inbound external HTTP POST
+    api = "api"  # Triggered via direct API call
 
 
 # -----------------------------------------------------------------------------
 # Workflow Engine Models
 # -----------------------------------------------------------------------------
 
+
 class Workflow(TenantEntity):
     """A configured automation workflow (e.g. 'Learner Onboarding' or 'Inactivity Reminder')."""
+
     __tablename__ = "workflows"
     __table_args__ = (UniqueConstraint("organization_id", "key", name="uq_workflow_key"),)
 
@@ -110,6 +113,7 @@ class WorkflowExecution(TenantEntity):
     Uses `idempotency_key` unique per organization to guarantee that a network retry
     cannot trigger duplicate workflow runs.
     """
+
     __tablename__ = "workflow_executions"
     __table_args__ = (
         UniqueConstraint("organization_id", "idempotency_key", name="uq_execution_idem"),
@@ -152,7 +156,10 @@ class WorkflowExecution(TenantEntity):
 
 
 class WorkflowStep(TenantEntity):
-    """An individual step within a workflow execution (e.g. 'send_welcome_email', 'generate_quiz')."""
+    """An individual step within a workflow execution (e.g. 'send_welcome_email',
+    'generate_quiz').
+    """
+
     __tablename__ = "workflow_steps"
 
     execution_id: Mapped[uuid.UUID] = mapped_column(
@@ -160,7 +167,9 @@ class WorkflowStep(TenantEntity):
     )
     position: Mapped[int] = mapped_column(Integer, nullable=False)
     name: Mapped[str] = mapped_column(String(120), nullable=False)
-    kind: Mapped[str] = mapped_column(String(40), nullable=False)  # "ai" | "http" | "email" | "delay" | "approval"
+    kind: Mapped[str] = mapped_column(
+        String(40), nullable=False
+    )  # "ai" | "http" | "email" | "delay" | "approval"
     status: Mapped[str] = mapped_column(String(24), nullable=False)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -174,6 +183,7 @@ class WorkflowStep(TenantEntity):
 
 class AutomationEvent(TenantEntity):
     """Internal domain event log (e.g. `learner.created`, `ticket.created`)."""
+
     __tablename__ = "automation_events"
 
     name: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
@@ -186,6 +196,7 @@ class AutomationEvent(TenantEntity):
 # Security & Support Ticket Models
 # -----------------------------------------------------------------------------
 
+
 class WebhookReceipt(TenantEntity):
     """Stores incoming webhook signatures to prevent replay attacks.
 
@@ -193,6 +204,7 @@ class WebhookReceipt(TenantEntity):
     The `signature` column has a UNIQUE constraint. If an attacker replays a valid
     HMAC signature, the database insert throws an IntegrityError, stopping execution immediately.
     """
+
     __tablename__ = "webhook_receipts"
     __table_args__ = (UniqueConstraint("signature", name="uq_webhook_signature"),)
 
@@ -205,6 +217,7 @@ class WebhookReceipt(TenantEntity):
 
 class SupportTicket(TenantEntity):
     """Helpdesk support ticket created by learners and automatically triaged by AI."""
+
     __tablename__ = "support_tickets"
 
     subject: Mapped[str] = mapped_column(String(300), nullable=False)

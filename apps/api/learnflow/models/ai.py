@@ -44,17 +44,20 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import TenantEntity
 
-
 # -----------------------------------------------------------------------------
 # Chat & Assistant Conversation Models
 # -----------------------------------------------------------------------------
 
+
 class Conversation(TenantEntity):
     """Chat session container between a user/learner and the AI assistant."""
+
     __tablename__ = "conversations"
 
     title: Mapped[str] = mapped_column(String(300), nullable=False)
-    kind: Mapped[str] = mapped_column(String(32), default="admin_rag", nullable=False)  # "admin_rag" | "learner_assistant"
+    kind: Mapped[str] = mapped_column(
+        String(32), default="admin_rag", nullable=False
+    )  # "admin_rag" | "learner_assistant"
     knowledge_base_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid, ForeignKey("knowledge_bases.id", ondelete="SET NULL")
     )
@@ -75,12 +78,15 @@ class Conversation(TenantEntity):
 
 class Message(TenantEntity):
     """An individual message within a conversation thread."""
+
     __tablename__ = "messages"
 
     conversation_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    role: Mapped[str] = mapped_column(String(16), nullable=False)  # "user" | "assistant" | "tool" | "system"
+    role: Mapped[str] = mapped_column(
+        String(16), nullable=False
+    )  # "user" | "assistant" | "tool" | "system"
     content: Mapped[str] = mapped_column(Text, nullable=False)
     citations: Mapped[list[Any]] = mapped_column(default=list, nullable=False)
     tool_calls: Mapped[list[Any]] = mapped_column(default=list, nullable=False)
@@ -98,8 +104,10 @@ class Message(TenantEntity):
 # Prompt Versioning & Model Config Models
 # -----------------------------------------------------------------------------
 
+
 class PromptTemplate(TenantEntity):
     """Versioned prompt template ensuring full reproducibility of generated materials."""
+
     __tablename__ = "prompt_templates"
     __table_args__ = (UniqueConstraint("organization_id", "name", "version", name="uq_prompt_ver"),)
 
@@ -113,6 +121,7 @@ class PromptTemplate(TenantEntity):
 
 class ModelConfiguration(TenantEntity):
     """Custom model routing settings for a tenant organization."""
+
     __tablename__ = "model_configurations"
 
     name: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -129,11 +138,13 @@ class ModelConfiguration(TenantEntity):
 # Observability & Cost Accounting Models
 # -----------------------------------------------------------------------------
 
+
 class LLMCall(TenantEntity):
     """Granular audit record created for EVERY single LLM or Embedding provider call.
 
     Stores token counts, latency, USD spend, retries, and errors for observability.
     """
+
     __tablename__ = "llm_calls"
 
     operation: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -164,6 +175,7 @@ class LLMCall(TenantEntity):
 
 class UsageRecord(TenantEntity):
     """Aggregated billing ledger used for high-level cost dashboards and analytics."""
+
     __tablename__ = "usage_records"
 
     kind: Mapped[str] = mapped_column(String(32), nullable=False)  # "llm" | "embedding"

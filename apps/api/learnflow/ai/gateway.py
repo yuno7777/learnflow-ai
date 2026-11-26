@@ -62,6 +62,7 @@ class AIResult:
 
     Contains raw text, parsed Pydantic object, token metrics, latency, and telemetry ID.
     """
+
     text: str
     parsed: Any | None
     model: str
@@ -126,7 +127,8 @@ class AIGateway:
         tools: list[dict[str, Any]] | None = None,
         retrieved_chunk_ids: list[str] | None = None,
     ) -> AIResult:
-        """Executes a chat completion with retries, fallback provider failover, and Pydantic validation.
+        """Executes a chat completion with retries, fallback provider failover, and Pydantic
+        validation.
 
         Args:
             operation: Audit label (e.g. "rag_answer", "course_generate", "assessment_evaluate").
@@ -154,7 +156,7 @@ class AIGateway:
         # 1. Iterate through provider chain (Primary -> Fallback)
         for provider_name in self._provider_chain(provider):
             used_fallback = provider_name != (provider or settings.llm_provider)
-            
+
             # 2. Retry loop with exponential backoff
             for attempt in range(settings.llm_max_retries):
                 attempts += 1
@@ -168,7 +170,7 @@ class AIGateway:
                         json_schema=json_schema,
                         tools=tools,
                     )
-                    
+
                     # 3. Pydantic validation & self-repair pass
                     parsed = None
                     if schema is not None:
@@ -243,7 +245,7 @@ class AIGateway:
             try:
                 result = await embedder.embed(texts, model=model)
                 cost = estimate_cost(result.model, result.input_tokens, 0)
-                
+
                 # Write billing usage record
                 self.session.add(
                     UsageRecord(

@@ -145,8 +145,9 @@ async def shutdown(ctx: dict) -> None:
 
 class WorkerSettings:
     """ARQ Worker configuration class."""
+
     redis_settings = RedisSettings.from_dsn(settings.redis_url)
-    
+
     # Registered background tasks
     functions = [
         ingest_document,
@@ -157,16 +158,18 @@ class WorkerSettings:
         run_workflow,
         transform_content,
     ]
-    
+
     # Registered recurring cron schedules
     cron_jobs = [
-        cron(sync_n8n_executions, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}),  # Every 5 min
-        cron(scan_inactive_learners, hour={7}, minute={0}),                                  # Daily 07:00 UTC
+        cron(
+            sync_n8n_executions, minute={0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55}
+        ),  # Every 5 min
+        cron(scan_inactive_learners, hour={7}, minute={0}),  # Daily 07:00 UTC
     ]
-    
+
     on_startup = startup
     on_shutdown = shutdown
-    max_tries = 3        # Maximum automatic retries per task
-    job_timeout = 900    # 15 minutes timeout for heavy AI generation/ingestion
-    keep_result = 3600   # Retain completed job status in Redis for 1 hour
-    max_jobs = 5         # Concurrency limit per worker process
+    max_tries = 3  # Maximum automatic retries per task
+    job_timeout = 900  # 15 minutes timeout for heavy AI generation/ingestion
+    keep_result = 3600  # Retain completed job status in Redis for 1 hour
+    max_jobs = 5  # Concurrency limit per worker process

@@ -8,8 +8,10 @@ This file manages courses, modules, and lessons:
    to published courses where the learner holds an active enrollment.
 2. `POST /courses/generate`: Enqueues an async background job (`generate_course`) to create
    a complete multi-module curriculum grounded in uploaded documents.
-3. `GET /courses/{id}`: Returns course details with eagerly-loaded modules and lessons (`selectinload`).
-4. `PATCH /courses/{id}` & `/lessons/{id}`: Enables manual instructor edits to titles and lesson markdown.
+3. `GET /courses/{id}`: Returns course details with eagerly-loaded modules and lessons
+(`selectinload`).
+4. `PATCH /courses/{id}` & `/lessons/{id}`: Enables manual instructor edits to titles and lesson
+markdown.
 5. `POST /courses/{id}/modules/{id}/regenerate`: Asynchronously rewrites a single module with AI.
 6. `POST /courses/{id}/publish`: Transitions course from `draft`/`review` to `published`.
 
@@ -17,7 +19,8 @@ This file manages courses, modules, and lessons:
 MULTI-TENANCY & LEARNER SCOPING:
 ===============================================================================
 Instructors and admins have full visibility across all draft/review/published courses in the tenant.
-Learners are restricted to `status == 'published'` AND `Enrollment.learner_id == current_learner_id`.
+Learners are restricted to `status == 'published'` AND `Enrollment.learner_id ==
+current_learner_id`.
 """
 
 from __future__ import annotations
@@ -51,7 +54,9 @@ router = APIRouter(prefix="/courses", tags=["courses"])
 
 
 async def _detail(session, repo, course: Course) -> CourseDetail:
-    """Helper hydrating course detail with eagerly loaded modules, lessons, and enrollment counts."""
+    """Helper hydrating course detail with eagerly loaded modules, lessons, and enrollment
+    counts.
+    """
     modules = (
         (
             await session.execute(
@@ -97,7 +102,9 @@ async def list_courses(
     params: PageParams = Depends(page_params),
     course_status: CourseStatus | None = Query(None, alias="status"),
 ) -> Page[CourseOut]:
-    """Lists courses in the tenant, scoped by role (learners only see their enrolled published courses)."""
+    """Lists courses in the tenant, scoped by role (learners only see their enrolled published
+    courses).
+    """
     where = [Course.status == course_status] if course_status else []
     if principal.is_learner:
         where.append(Course.status == CourseStatus.published)

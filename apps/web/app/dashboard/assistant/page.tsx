@@ -27,7 +27,7 @@ interface Turn {
 
 export default function AssistantPage() {
   const [question, setQuestion] = React.useState("");
-  const [knowledgeBaseId, setKnowledgeBaseId] = React.useState("");
+  const [selectedKnowledgeBaseId, setKnowledgeBaseId] = React.useState("");
   const [conversationId, setConversationId] = React.useState<string | null>(null);
   const [turns, setTurns] = React.useState<Turn[]>([]);
 
@@ -36,9 +36,7 @@ export default function AssistantPage() {
     queryFn: () => api.get<Page<KnowledgeBase>>("/api/v1/knowledge-bases", { limit: 50 }),
   });
 
-  React.useEffect(() => {
-    if (!knowledgeBaseId && bases.data?.items.length) setKnowledgeBaseId(bases.data.items[0].id);
-  }, [bases.data, knowledgeBaseId]);
+  const knowledgeBaseId = selectedKnowledgeBaseId || bases.data?.items[0]?.id || "";
 
   const ask = useMutation({
     mutationFn: (text: string) =>

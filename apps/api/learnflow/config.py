@@ -28,9 +28,11 @@ HOW IT CONNECTS TO THE REST OF THE PROJECT:
   * `redis_client.py`: Reads `settings.redis_url` to connect to Redis.
   * `security.py`: Reads `settings.jwt_secret`, `jwt_algorithm`, `access_token_ttl_minutes`.
   * `middleware.py`: Reads `settings.rate_limit_per_minute` and `settings.cors_origins`.
-  * `ai/gateway.py` & `ai/registry.py`: Reads `settings.llm_provider`, `llm_model`, `openai_api_key`.
+  * `ai/gateway.py` & `ai/registry.py`: Reads `settings.llm_provider`, `llm_model`,
+  `openai_api_key`.
   * `rag/pipeline.py` & `rag/chunking.py`: Reads `chunk_size_tokens`, `chunk_overlap_tokens`.
-  * `automation/engine.py` & `automation/n8n_client.py`: Reads `n8n_base_url`, `webhook_signing_secret`.
+  * `automation/engine.py` & `automation/n8n_client.py`: Reads `n8n_base_url`,
+  `webhook_signing_secret`.
   * `worker/main.py`: Reads `redis_url` for ARQ background worker initialization.
 """
 
@@ -69,14 +71,16 @@ class Settings(BaseSettings):
     #    and background jobs fall back to database polling in `worker/standalone.py`).
     redis_url: str = "redis://localhost:6379/0"
 
-    # 3. Job Queue mode: "arq" (uses Redis) or "database" (polls `jobs` table via standalone worker).
+    # 3. Job Queue mode: "arq" (uses Redis) or "database" (polls `jobs` table via standalone
+    # worker).
     job_queue: str = "arq"
 
     # 4. ChromaDB Vector Store:
     #    Consumed by: `learnflow/rag/vectorstore.py` to connect to Chroma's HTTP server.
     chroma_host: str = "localhost"
     chroma_port: int = 8001
-    # When set to a folder path, Chroma runs in-memory/embedded on disk (used during automated tests/CLI).
+    # When set to a folder path, Chroma runs in-memory/embedded on disk (used during automated
+    # tests/CLI).
     chroma_persist_dir: str | None = None
 
     # --- Authentication & Cryptography ---
@@ -85,7 +89,7 @@ class Settings(BaseSettings):
     jwt_secret: str = Field(default="dev-only-change-me", min_length=8)
     jwt_algorithm: str = "HS256"
     access_token_ttl_minutes: int = 30  # Short-lived access token for stateless API requests
-    refresh_token_ttl_days: int = 14     # Long-lived single-use rotating refresh token
+    refresh_token_ttl_days: int = 14  # Long-lived single-use rotating refresh token
     password_min_length: int = 10
 
     # --- Webhooks & n8n Workflow Automation ---
@@ -120,18 +124,19 @@ class Settings(BaseSettings):
 
     # --- Ingestion & RAG Subsystem ---
     # Consumed by: `learnflow/rag/pipeline.py`, `rag/chunking.py`, `rag/retrieval.py`.
-    upload_dir: str = "/data/uploads"          # Directory where raw uploaded PDFs/DOCX are stored
-    max_upload_bytes: int = 25 * 1024 * 1024   # 25 MB max upload file size
-    chunk_size_tokens: int = 700               # Target token budget per chunk
-    chunk_overlap_tokens: int = 100            # Overlap tokens carried forward to preserve context
-    retrieval_top_k: int = 6                   # Number of citations to include in final prompt
-    retrieval_min_score: float = 0.25          # Minimum RRF score threshold before triggering refusal
+    upload_dir: str = "/data/uploads"  # Directory where raw uploaded PDFs/DOCX are stored
+    max_upload_bytes: int = 25 * 1024 * 1024  # 25 MB max upload file size
+    chunk_size_tokens: int = 700  # Target token budget per chunk
+    chunk_overlap_tokens: int = 100  # Overlap tokens carried forward to preserve context
+    retrieval_top_k: int = 6  # Number of citations to include in final prompt
+    retrieval_min_score: float = 0.25  # Minimum RRF score threshold before triggering refusal
 
     # --- Operations, Networking & Email ---
-    # Consumed by: `learnflow/main.py` (CORS), `middleware.py` (Rate Limiting), `automation/email.py`.
+    # Consumed by: `learnflow/main.py` (CORS), `middleware.py` (Rate Limiting),
+    # `automation/email.py`.
     cors_origins: list[str] = ["http://localhost:3000"]
-    rate_limit_per_minute: int = 120           # Fixed-window max requests per IP / API key
-    smtp_host: str | None = None               # Unset in dev/tests => triggers MockEmailAdapter
+    rate_limit_per_minute: int = 120  # Fixed-window max requests per IP / API key
+    smtp_host: str | None = None  # Unset in dev/tests => triggers MockEmailAdapter
     smtp_port: int = 587
     smtp_user: str | None = None
     smtp_password: str | None = None

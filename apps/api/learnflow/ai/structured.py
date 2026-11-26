@@ -25,13 +25,14 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator
 
-
 # -----------------------------------------------------------------------------
 # Course & Curriculum Generation Schemas
 # -----------------------------------------------------------------------------
 
+
 class GeneratedLesson(BaseModel):
     """An individual lesson within a generated module."""
+
     title: str = Field(min_length=3, max_length=300)
     summary: str = Field(min_length=10)
     content: str = Field(min_length=30, description="Lesson body in markdown")
@@ -41,6 +42,7 @@ class GeneratedLesson(BaseModel):
 
 class GeneratedModule(BaseModel):
     """A generated course module containing multiple lessons."""
+
     title: str = Field(min_length=3, max_length=300)
     summary: str = Field(min_length=10)
     learning_objectives: list[str] = Field(min_length=1, max_length=8)
@@ -49,6 +51,7 @@ class GeneratedModule(BaseModel):
 
 class GeneratedCourse(BaseModel):
     """The root payload schema for full course generation."""
+
     title: str = Field(min_length=3, max_length=300)
     description: str = Field(min_length=20)
     learning_objectives: list[str] = Field(min_length=2, max_length=12)
@@ -59,8 +62,10 @@ class GeneratedCourse(BaseModel):
 # Assessment & Question Schemas
 # -----------------------------------------------------------------------------
 
+
 class GeneratedQuestion(BaseModel):
     """A generated assessment item with validation rules."""
+
     type: str = Field(pattern="^(multiple_choice|true_false|short_answer|scenario)$")
     prompt: str = Field(min_length=10)
     options: list[str] = Field(default_factory=list, max_length=6)
@@ -83,6 +88,7 @@ class GeneratedQuestion(BaseModel):
 
 class GeneratedQuiz(BaseModel):
     """The root payload schema for assessment generation."""
+
     title: str = Field(min_length=3)
     questions: list[GeneratedQuestion] = Field(min_length=1, max_length=50)
 
@@ -91,8 +97,10 @@ class GeneratedQuiz(BaseModel):
 # Evaluation & Grading Schemas
 # -----------------------------------------------------------------------------
 
+
 class QuestionEvaluation(BaseModel):
     """Grading breakdown for an individual subjective question."""
+
     question_index: int = Field(ge=0)
     score: float = Field(ge=0)
     max_score: float = Field(gt=0)
@@ -102,6 +110,7 @@ class QuestionEvaluation(BaseModel):
 
 class GeneratedEvaluation(BaseModel):
     """Overall evaluation output returned by the LLM grading service."""
+
     score: float = Field(ge=0)
     max_score: float = Field(gt=0)
     confidence: float = Field(ge=0, le=1)
@@ -115,8 +124,10 @@ class GeneratedEvaluation(BaseModel):
 # Support Ticket & Content Transform Schemas
 # -----------------------------------------------------------------------------
 
+
 class TicketTriage(BaseModel):
     """Automated classification and response draft for support tickets."""
+
     category: str = Field(
         pattern="^(course_access|payment_issue|technical_problem|assessment_query"
         "|certificate_issue|general_learning)$"
@@ -141,6 +152,7 @@ TICKET_CATEGORIES = [
 
 class TransformedContent(BaseModel):
     """Repurposed training document format (FAQ, Flashcard, Executive Summary)."""
+
     output_type: str
     title: str = Field(min_length=3)
     body: str = Field(min_length=30)

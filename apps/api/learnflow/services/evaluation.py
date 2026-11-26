@@ -190,7 +190,7 @@ async def evaluate_submission(
         evaluation.rationale = "\n".join(rationales) or "All questions graded by exact match."
         evaluation.model_used = None if not rationales else per_question[-1].get("model")
         evaluation.prompt_version = ANSWER_EVALUATE.version
-        
+
         # Gate: Flag for human review if any question had low confidence (< 0.75)
         evaluation.requires_human_review = confidence < CONFIDENCE_THRESHOLD
         evaluation.status = (

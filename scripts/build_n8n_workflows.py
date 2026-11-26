@@ -233,7 +233,7 @@ def save(filename, name, nodes, connections, tags):
         "versionId": "1",
         "meta": {"instanceId": "learnflow"},
     }
-    (OUT / filename).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    (OUT / filename).write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8", newline="\n")
     print("wrote", filename)
 
 

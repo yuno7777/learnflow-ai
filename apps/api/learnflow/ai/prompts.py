@@ -30,6 +30,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True, slots=True)
 class Prompt:
     """Immutable versioned prompt definition."""
+
     name: str
     version: int
     system: str

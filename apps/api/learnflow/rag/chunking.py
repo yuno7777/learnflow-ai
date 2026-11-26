@@ -37,6 +37,7 @@ _SENTENCE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(])|\n{2,}")
 @dataclass(slots=True)
 class Chunk:
     """A prepared text chunk ready for vector embedding and database insertion."""
+
     text: str
     position: int
     token_count: int
@@ -123,7 +124,7 @@ def chunk_segments(
         page, section = segment.page, segment.section
         for sentence in split_sentences(segment.text):
             tokens = count_tokens(sentence)
-            
+
             # Handle oversized single sentences (e.g. long tables or code blocks)
             if tokens > chunk_size:
                 flush()

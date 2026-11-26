@@ -56,6 +56,7 @@ _WORD = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{2,}")
 @dataclass(slots=True)
 class Citation:
     """A citation passage returned to the user with exact document and page metadata."""
+
     chunk_id: str
     document_id: str
     document_name: str
@@ -68,6 +69,7 @@ class Citation:
 @dataclass(slots=True)
 class Retrieval:
     """The complete result of a hybrid retrieval pass."""
+
     citations: list[Citation]
     confidence: float
     latency_ms: int
@@ -81,6 +83,7 @@ class Retrieval:
 @dataclass(slots=True)
 class Answer:
     """The final grounded answer with citation metadata and AI execution metrics."""
+
     text: str
     refused: bool
     retrieval: Retrieval
@@ -252,7 +255,7 @@ async def answer_question(
         knowledge_base_id=knowledge_base_id,
         document_ids=document_ids,
     )
-    
+
     # 2. Hard refusal gate: if no chunks found, return refusal with ZERO token cost
     if retrieval.is_empty:
         return Answer(text=REFUSAL, refused=True, retrieval=retrieval, result=None)
@@ -260,7 +263,7 @@ async def answer_question(
     # 3. Render prompt with retrieved citations
     system, user = RAG_ANSWER.render(context=build_context(retrieval.citations), question=question)
     messages = [ChatMessage("system", system), *(history or []), ChatMessage("user", user)]
-    
+
     # 4. Generate answer using AI Gateway
     result = await gateway.complete(
         "rag_answer",

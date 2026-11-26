@@ -26,6 +26,7 @@ from .base import ChatMessage, Completion, EmbeddingResult, ProviderUnavailable
 
 class OllamaLLM:
     """Adapter for self-hosted Ollama local LLM instances."""
+
     name = "ollama"
 
     def __init__(self, base_url: str | None = None) -> None:
@@ -74,6 +75,7 @@ class OllamaLLM:
 
 class OllamaEmbeddings(OllamaLLM):
     """Adapter for Ollama local vector embedding models (e.g. `nomic-embed-text`)."""
+
     name = "ollama"
 
     def __init__(self, base_url: str | None = None, dimensions: int | None = None) -> None:

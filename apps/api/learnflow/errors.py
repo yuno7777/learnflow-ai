@@ -59,6 +59,7 @@ log = get_logger(__name__)
 # Base & Domain Exceptions Hierarchy
 # -----------------------------------------------------------------------------
 
+
 class AppError(Exception):
     """Base class for all operational and domain exceptions in LearnFlow.
 
@@ -76,42 +77,49 @@ class AppError(Exception):
 
 class NotFound(AppError):
     """Resource not found (or hidden due to tenant isolation). Status 404."""
+
     status_code = status.HTTP_404_NOT_FOUND
     code = "not_found"
 
 
 class Conflict(AppError):
     """Resource already exists (e.g. duplicate organization slug or email). Status 409."""
+
     status_code = status.HTTP_409_CONFLICT
     code = "conflict"
 
 
 class Unauthorized(AppError):
     """Missing or invalid authentication credentials (bad JWT or API key). Status 401."""
+
     status_code = status.HTTP_401_UNAUTHORIZED
     code = "unauthorized"
 
 
 class Forbidden(AppError):
     """Authenticated caller lacks required RBAC permissions or membership. Status 403."""
+
     status_code = status.HTTP_403_FORBIDDEN
     code = "forbidden"
 
 
 class ValidationFailed(AppError):
     """Business validation failed (e.g. invalid quiz questions or bad magic bytes). Status 422."""
+
     status_code = 422
     code = "validation_failed"
 
 
 class RateLimited(AppError):
     """Client has exceeded the allowed requests-per-minute threshold. Status 429."""
+
     status_code = status.HTTP_429_TOO_MANY_REQUESTS
     code = "rate_limited"
 
 
 class ProviderError(AppError):
     """Upstream AI (OpenAI, Azure) or automation service failed after retries. Status 502."""
+
     status_code = status.HTTP_502_BAD_GATEWAY
     code = "provider_error"
 
@@ -122,6 +130,7 @@ class TenantIsolationError(AppError):
     CRITICAL NOTE: This indicates an internal programming bug (not a user error).
     Always returns 403 Forbidden and logs as a critical error.
     """
+
     status_code = status.HTTP_403_FORBIDDEN
     code = "tenant_isolation"
 
@@ -129,6 +138,7 @@ class TenantIsolationError(AppError):
 # -----------------------------------------------------------------------------
 # Error Payload Serializer & Global Handlers
 # -----------------------------------------------------------------------------
+
 
 def _payload(code: str, message: str, details: dict[str, Any], request: Request) -> dict[str, Any]:
     """Helper to construct the standardized JSON error envelope with the current request_id."""
@@ -180,7 +190,9 @@ def install_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(StarletteHTTPException)
     async def _http(request: Request, exc: StarletteHTTPException) -> JSONResponse:
-        """Handles standard HTTP exceptions raised by Starlette/FastAPI internals (e.g. 404 router misses)."""
+        """Handles standard HTTP exceptions raised by Starlette/FastAPI internals (e.g. 404
+        router misses).
+        """
         code = {401: "unauthorized", 403: "forbidden", 404: "not_found"}.get(
             exc.status_code, "http_error"
         )

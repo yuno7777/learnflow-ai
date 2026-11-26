@@ -4,7 +4,8 @@
 WHAT THIS FILE IS RESPONSIBLE FOR:
 ===============================================================================
 This file securely receives inbound HTTP webhooks from external systems:
-1. Cryptographic HMAC Verification (`_verify`): Validates `X-LearnFlow-Signature: t=<unix>,v1=<hmac>`
+1. Cryptographic HMAC Verification (`_verify`): Validates `X-LearnFlow-Signature:
+t=<unix>,v1=<hmac>`
    over the raw request body bytes.
 2. Replay Protection (`_record_receipt`): Inserts the signature into `webhook_receipts`.
    PostgreSQL's unique database constraint on `signature` guarantees that identical or
@@ -69,7 +70,9 @@ async def _record_receipt(
     event_id: str | None,
     payload: dict[str, Any],
 ) -> WebhookReceipt:
-    """Inserts a webhook receipt. The database unique constraint on `signature` blocks replay attacks."""
+    """Inserts a webhook receipt. The database unique constraint on `signature` blocks replay
+    attacks.
+    """
     receipt = WebhookReceipt(
         organization_id=organization_id,
         source=source,
@@ -102,7 +105,7 @@ async def n8n_callback(request: Request, session: SessionDep) -> dict[str, Any]:
     execution = await session.get(WorkflowExecution, callback.execution_id)
     if execution is None:
         raise NotFound("Unknown execution id")
-        
+
     # 2. Record unique receipt for replay protection
     await _record_receipt(
         session,

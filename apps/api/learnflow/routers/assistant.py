@@ -7,7 +7,8 @@ This file powers the interactive AI chatbot and content repurposing features:
 1. `POST /assistant/ask`: Multi-turn conversational learner assistant:
    - Injects unconditional knowledge base grounding pass on turn 1.
    - Iterates up to `MAX_TOOL_ROUNDS = 4` executing tool calls via `ToolBox`
-     (`search_knowledge_base`, `get_learner_progress`, `get_course_info`, `create_support_ticket`, `recommend_content`).
+     (`search_knowledge_base`, `get_learner_progress`, `get_course_info`, `create_support_ticket`,
+     `recommend_content`).
    - Accumulates citations and appends complete message history to PostgreSQL.
 2. `GET /assistant/messages/{id}`: Retrieves full chat conversation history.
 3. `POST /content/transform`: Generates flashcards, FAQs, executive summaries, or quiz items
@@ -61,6 +62,7 @@ OUTPUT_TYPES = [
 
 class AssistantAsk(BaseModel):
     """Payload schema for asking a question to the learner assistant."""
+
     question: str = Field(min_length=2, max_length=4000)
     learner_id: uuid.UUID | None = None
     conversation_id: uuid.UUID | None = None
@@ -68,6 +70,7 @@ class AssistantAsk(BaseModel):
 
 class AssistantReply(BaseModel):
     """Response payload returned by the learner assistant."""
+
     answer: str
     conversation_id: uuid.UUID
     message_id: uuid.UUID
@@ -100,7 +103,7 @@ async def ask(
     )
     learner_id = scoped_learner_id(principal, body.learner_id)
     learner = await repo.get(Learner, learner_id) if learner_id else None
-    
+
     # 1. Fetch or create conversation thread
     conversation = (
         await repo.get(Conversation, body.conversation_id)
@@ -148,7 +151,7 @@ async def ask(
         )
         if not result.tool_calls:
             break  # Model is ready with its final natural language answer
-            
+
         messages.append(ChatMessage("assistant", result.text or ""))
         for call in result.tool_calls:
             output = await toolbox.call(call.name, call.arguments)
@@ -198,6 +201,7 @@ async def history(conversation_id: uuid.UUID, repo: RepoDep) -> list[Message]:
 
 class TransformRequest(BaseModel):
     """Payload schema for requesting asynchronous document content transformations."""
+
     document_ids: list[uuid.UUID] = Field(min_length=1, max_length=10)
     output_types: list[str] = Field(min_length=1, max_length=8)
     instructions: str = Field(default="", max_length=2000)

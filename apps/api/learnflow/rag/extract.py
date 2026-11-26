@@ -52,6 +52,7 @@ _MAGIC = {".pdf": b"%PDF-", ".docx": b"PK\x03\x04"}
 @dataclass(slots=True)
 class Segment:
     """A extracted section of text with optional page number and section heading."""
+
     text: str
     page: int | None = None
     section: str | None = None
@@ -72,12 +73,12 @@ def validate_upload(filename: str, content_type: str, data: bytes, max_bytes: in
         raise ValidationFailed("File is empty")
     if len(data) > max_bytes:
         raise ValidationFailed("File too large", {"size_bytes": len(data), "max_bytes": max_bytes})
-    
+
     # Check binary header bytes
     magic = _MAGIC.get(suffix)
     if magic and not data.startswith(magic):
         raise ValidationFailed(f"File content does not match its '{suffix}' extension")
-    
+
     # Check MIME content type if provided
     if content_type and content_type.split(";")[0].strip() not in SUPPORTED[suffix]:
         raise ValidationFailed(

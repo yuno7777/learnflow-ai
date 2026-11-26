@@ -59,7 +59,7 @@ RESOURCES = """          resources:
 def write(name: str, body: str) -> None:
     """Writes formatted YAML content with warning header."""
     OUT.mkdir(parents=True, exist_ok=True)
-    (OUT / name).write_text(HEADER + body.lstrip("\n"), encoding="utf-8")
+    (OUT / name).write_text(HEADER + body.lstrip("\n"), encoding="utf-8", newline="\n")
     print("wrote", name)
 
 
@@ -95,6 +95,7 @@ data:
   CHROMA_HOST: "chromadb"
   CHROMA_PORT: "8000"
   UPLOAD_DIR: "/data/uploads"
+  # Start on the offline provider; switch to openai and supply OPENAI_API_KEY in the Secret.
   LLM_PROVIDER: "mock"
   LLM_MODEL: "gpt-4o-mini"
   EMBEDDING_PROVIDER: "mock"
@@ -112,7 +113,7 @@ def secrets_example() -> None:
     write(
         "02-secrets.example.yaml",
         f"""
-# EXAMPLE ONLY — do not apply directly. Create Secret using kubectl or sealed-secrets:
+# EXAMPLE ONLY — do not apply. Create the real Secret out of band:
 #
 #   kubectl -n {NS} create secret generic learnflow-secrets \\
 #     --from-literal=JWT_SECRET="$(openssl rand -hex 32)" \\
@@ -328,7 +329,7 @@ metadata:
   name: learnflow-uploads
   namespace: {NS}
 spec:
-  # ReadWriteMany allows the API (uploader) and workers (extractors) to share the file volume
+  # RWX so the API (which writes uploads) and the worker (which reads them) can share it.
   accessModes: ["ReadWriteMany"]
   resources:
     requests:
@@ -380,7 +381,7 @@ spec:
         app: api
     spec:
       initContainers:
-        # Blocks API traffic until database migration job completes successfully
+        # Do not serve traffic against an un-migrated schema.
         - name: wait-for-migration
           image: bitnami/kubectl:latest
           command:
@@ -553,11 +554,15 @@ metadata:
   namespace: {NS}
   annotations:
     nginx.ingress.kubernetes.io/proxy-body-size: "32m"
-    # SSE streaming requires disabling proxy buffering so events are flushed immediately
+    # SSE needs buffering off, or execution updates arrive only when the buffer flushes.
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   ingressClassName: nginx
+  # tls:
+  #   - hosts: [learnflow.example.com]
+  #     secretName: learnflow-tls
   rules:
     - host: learnflow.example.com
       http:
@@ -608,6 +613,7 @@ resources:
   - 22-web.yaml
   - 23-n8n.yaml
   - 30-ingress.yaml
+# 02-secrets.example.yaml is deliberately excluded — create the Secret out of band.
 """,
     )
 

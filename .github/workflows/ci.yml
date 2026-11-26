@@ -159,7 +159,7 @@ jobs:
 
       - name: npm audit
         working-directory: apps/web
-        run: npm audit --omit=dev --audit-level=high || echo "::warning::npm audit reported findings"
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Fail if a secret-looking literal was committed
         run: |
@@ -216,7 +216,7 @@ jobs:
       - name: Smoke test the API image
         run: |
           docker run -d --name api-smoke -p 8000:8000 \
-            -e DATABASE_URL=sqlite+aiosqlite:///./smoke.db \
+            -e REDIS_URL= \
             -e JWT_SECRET=smoke-secret-value-long-enough \
             learnflow/api:ci
           for i in $(seq 1 20); do

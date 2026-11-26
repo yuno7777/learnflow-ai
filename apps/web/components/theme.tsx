@@ -7,6 +7,8 @@ import { Button } from "@/components/ui";
 type Theme = "light" | "dark";
 
 const STORAGE_KEY = "learnflow.theme";
+const THEME_CHANGED = "learnflow:theme-changed";
+const DARK_QUERY = "(prefers-color-scheme: dark)";
 
 function apply(theme: Theme) {
   document.documentElement.classList.toggle("dark", theme === "dark");
@@ -18,25 +20,33 @@ function apply(theme: Theme) {
  * by an inline script in the layout so the first paint is already correct — doing it here
  * only would flash light before hydration.
  */
+function readTheme(): Theme {
+  const stored = localStorage.getItem(STORAGE_KEY);
+  if (stored === "dark" || stored === "light") return stored;
+  return window.matchMedia(DARK_QUERY).matches ? "dark" : "light";
+}
+
+function subscribeTheme(onChange: () => void) {
+  const media = window.matchMedia(DARK_QUERY);
+  media.addEventListener("change", onChange);
+  window.addEventListener("storage", onChange);
+  window.addEventListener(THEME_CHANGED, onChange);
+  return () => {
+    media.removeEventListener("change", onChange);
+    window.removeEventListener("storage", onChange);
+    window.removeEventListener(THEME_CHANGED, onChange);
+  };
+}
+
+function updateTheme(theme: Theme) {
+  localStorage.setItem(STORAGE_KEY, theme);
+  window.dispatchEvent(new Event(THEME_CHANGED));
+}
+
 export function useTheme(): [Theme, (next: Theme) => void] {
-  const [theme, setTheme] = React.useState<Theme>("light");
-
-  React.useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY) as Theme | null;
-    const initial =
-      stored ??
-      (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-    setTheme(initial);
-    apply(initial);
-  }, []);
-
-  const update = React.useCallback((next: Theme) => {
-    setTheme(next);
-    localStorage.setItem(STORAGE_KEY, next);
-    apply(next);
-  }, []);
-
-  return [theme, update];
+  const theme = React.useSyncExternalStore<Theme>(subscribeTheme, readTheme, () => "light");
+  React.useEffect(() => apply(readTheme()), [theme]);
+  return [theme, updateTheme];
 }
 
 export function ThemeToggle() {
