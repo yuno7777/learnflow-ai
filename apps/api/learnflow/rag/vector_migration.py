@@ -6,11 +6,15 @@ from uuid import UUID
 
 import asyncpg
 
+from learnflow.rag.vectorstore import collection_name
+
 
 async def copy_collection(
     collection, connection: asyncpg.Connection, tenant: UUID, *, batch_size=256
 ):
     """Copy a snapshot in bounded pages. The caller owns the staging table and connection."""
+    if collection.name != collection_name(tenant):
+        raise ValueError("Source collection does not match the destination tenant")
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
     total = await asyncio.to_thread(collection.count)
