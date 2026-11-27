@@ -56,13 +56,13 @@ async def verify():
             await connection.execute("TRUNCATE pg_temp.chunks")
             await connection.execute("""
                 CREATE TEMP TABLE rejected_ids (id text PRIMARY KEY);
-                CREATE FUNCTION pg_temp.reject_page() RETURNS trigger LANGUAGE plpgsql AS $
+                CREATE FUNCTION pg_temp.reject_page() RETURNS trigger LANGUAGE plpgsql AS $reject$
                 BEGIN
                     IF EXISTS (SELECT FROM pg_temp.rejected_ids WHERE id = NEW.id) THEN
                         RAISE check_violation USING MESSAGE = 'fixture rejects second page';
                     END IF;
                     RETURN NEW;
-                END $;
+                END; $reject$;
                 CREATE TRIGGER reject_page BEFORE INSERT ON pg_temp.chunks
                 FOR EACH ROW EXECUTE FUNCTION pg_temp.reject_page()
             """)
