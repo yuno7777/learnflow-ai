@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+from pathlib import Path
 from uuid import UUID
 
 import asyncpg
@@ -20,7 +21,8 @@ async def verify():
 
     connection = await asyncpg.connect(os.environ["VECTOR_TEST_DSN"])
     try:
-        await connection.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        schema = Path(__file__).resolve().parents[1] / "ops/pgvector/001_chunks.sql"
+        await connection.execute(schema.read_text(encoding="utf-8"))
         await connection.execute("""
             CREATE TEMP TABLE chunks (
                 tenant uuid, id text, body text, metadata jsonb, embedding vector,
@@ -92,10 +94,20 @@ async def verify():
                 assert [row["id"] for row in rows] == expected["ids"][0]
                 assert [row["body"] for row in rows] == expected["documents"][0]
                 assert [json.loads(row["metadata"]) for row in rows] == expected["metadatas"][0]
+            await connection.execute("""
+                INSERT INTO learnflow_vector.chunks (tenant, id, body, metadata, embedding)
+                SELECT tenant, id, body, metadata, embedding FROM pg_temp.chunks WHERE tenant = $1
+            """, tenant)
         finally:
             collection.delete(ids=["appendix:0"])
     finally:
         await connection.close()
+    reader = await asyncpg.connect(os.environ["VECTOR_TEST_DSN"])
+    try:
+        ids = await reader.fetch("SELECT id FROM learnflow_vector.chunks WHERE tenant = $1", tenant)
+        assert {row["id"] for row in ids} == {"handbook:0", "appendix:0"}
+    finally:
+        await reader.close()
     assert collection.count() == 1
 
 
