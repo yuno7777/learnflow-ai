@@ -59,3 +59,17 @@ async def copy_collection(
         if copied != total or await asyncio.to_thread(collection.count) != total:
             raise RuntimeError("Source collection changed during migration")
     return copied
+
+
+async def promote_staged_chunks(connection: asyncpg.Connection, tenant: UUID):
+    """Upsert one tenant's staged chunks in a single atomic statement."""
+    await connection.execute(
+        """
+        INSERT INTO learnflow_vector.chunks (tenant, id, body, metadata, embedding)
+        SELECT tenant, id, body, metadata, embedding
+        FROM pg_temp.chunks WHERE tenant = $1 ORDER BY id
+        ON CONFLICT (tenant, id) DO UPDATE SET
+            body = excluded.body, metadata = excluded.metadata, embedding = excluded.embedding
+        """,
+        tenant,
+    )

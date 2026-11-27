@@ -8,7 +8,7 @@ from uuid import UUID
 import asyncpg
 import chromadb
 
-from learnflow.rag.vector_migration import copy_collection
+from learnflow.rag.vector_migration import copy_collection, promote_staged_chunks
 from learnflow.rag.vectorstore import collection_name
 
 
@@ -95,9 +95,14 @@ async def verify():
                 assert [row["body"] for row in rows] == expected["documents"][0]
                 assert [json.loads(row["metadata"]) for row in rows] == expected["metadatas"][0]
             await connection.execute("""
-                INSERT INTO learnflow_vector.chunks (tenant, id, body, metadata, embedding)
-                SELECT tenant, id, body, metadata, embedding FROM pg_temp.chunks WHERE tenant = $1
-            """, tenant)
+                INSERT INTO pg_temp.chunks (tenant, id, body, metadata, embedding)
+                VALUES ($1, 'unrelated', 'other tenant', '{}', '[0,1]')
+            """, UUID(int=2))
+            for _ in range(2):
+                await promote_staged_chunks(connection, tenant)
+            assert await connection.fetchval(
+                "SELECT count(*) FROM learnflow_vector.chunks WHERE tenant = $1", UUID(int=2)
+            ) == 0
         finally:
             collection.delete(ids=["appendix:0"])
     finally:
