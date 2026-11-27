@@ -78,6 +78,20 @@ async def verify():
             assert await copy_collection(collection, connection, tenant, batch_size=1) == 2
             ids = await connection.fetch("SELECT id FROM pg_temp.chunks WHERE tenant = $1", tenant)
             assert {record["id"] for record in ids} == {"handbook:0", "appendix:0"}
+            # Compare the full ranked result and citations for each fixture vector.
+            for probe in ([1.0, 0.0], [0.0, 1.0]):
+                expected = collection.query(
+                    query_embeddings=[probe], n_results=2,
+                    include=["documents", "metadatas"],
+                )
+                rows = await connection.fetch(
+                    """SELECT id, body, metadata FROM pg_temp.chunks
+                       WHERE tenant = $1 ORDER BY embedding <=> $2::vector, id LIMIT 2""",
+                    tenant, json.dumps(probe),
+                )
+                assert [row["id"] for row in rows] == expected["ids"][0]
+                assert [row["body"] for row in rows] == expected["documents"][0]
+                assert [json.loads(row["metadata"]) for row in rows] == expected["metadatas"][0]
         finally:
             collection.delete(ids=["appendix:0"])
     finally:
