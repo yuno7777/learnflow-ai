@@ -116,6 +116,11 @@ async def verify():
         assert [m.id for m in matches] == ["handbook:0", "appendix:0"]
         assert matches[0].text == source["documents"][0]
         assert matches[0].metadata == source["metadatas"][0]
+        for page_filter in (2, [2, 99]):
+            filtered = await query_chunks(reader, tenant, [1.0, 0.0], top_k=1, where={"page": page_filter})
+            assert [m.id for m in filtered] == ["appendix:0"]
+        for criteria in ({"page": []}, {"page": "2"}, {"page": 2, "missing": True}):
+            assert await query_chunks(reader, tenant, [1.0, 0.0], top_k=2, where=criteria) == []
         assert [m.score for m in matches] == [1.0, 0.0]
         assert await query_chunks(reader, UUID(int=2), [1.0, 0.0], top_k=2) == []
     finally:
