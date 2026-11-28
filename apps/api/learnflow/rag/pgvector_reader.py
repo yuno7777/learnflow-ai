@@ -28,7 +28,11 @@ async def query_chunks(
             id=row["id"],
             text=row["body"],
             metadata=(json.loads(row["metadata"]) or {}) if row["metadata"] else {},
-            score=max(0.0, min(1.0, 1.0 - row["distance"])) if math.isfinite(row["distance"]) else 0.0,
+            score=(
+                max(0.0, min(1.0, 1.0 - row["distance"]))
+                if math.isfinite(row["distance"])
+                else 0.0
+            ),
         )
         for row in rows
     ]
