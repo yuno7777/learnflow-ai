@@ -8,6 +8,7 @@ from uuid import UUID
 import asyncpg
 import chromadb
 
+from learnflow.rag.pgvector_reader import query_chunks
 from learnflow.rag.vector_migration import copy_collection, promote_staged_chunks
 from learnflow.rag.vectorstore import collection_name
 
@@ -111,6 +112,12 @@ async def verify():
     try:
         ids = await reader.fetch("SELECT id FROM learnflow_vector.chunks WHERE tenant = $1", tenant)
         assert {row["id"] for row in ids} == {"handbook:0", "appendix:0"}
+        matches = await query_chunks(reader, tenant, [1.0, 0.0], top_k=2)
+        assert [m.id for m in matches] == ["handbook:0", "appendix:0"]
+        assert matches[0].text == source["documents"][0]
+        assert matches[0].metadata == source["metadatas"][0]
+        assert [m.score for m in matches] == [1.0, 0.0]
+        assert await query_chunks(reader, UUID(int=2), [1.0, 0.0], top_k=2) == []
     finally:
         await reader.close()
     assert collection.count() == 1
