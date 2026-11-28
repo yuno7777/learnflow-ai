@@ -55,5 +55,19 @@ jobs:
         env:
           VECTOR_TEST_DSN: postgresql://postgres:vector_ci@localhost:5432/postgres
         run: python tests/vector_migration_smoke.py
+      - name: Restore the vector backup into a fresh database
+        env:
+          PG_CONTAINER: ${{ job.services.postgres.id }}
+        run: |
+          set -euo pipefail
+          docker exec "$PG_CONTAINER" pg_dump -U postgres -Fc postgres > "$RUNNER_TEMP/vector.dump"
+          docker exec "$PG_CONTAINER" createdb -U postgres vector_restore
+          docker exec -i "$PG_CONTAINER" pg_restore -U postgres --exit-on-error --single-transaction -d vector_restore < "$RUNNER_TEMP/vector.dump"
+          query="COPY (SELECT tenant, id, body, metadata, embedding FROM learnflow_vector.chunks ORDER BY tenant, id) TO STDOUT"
+          for db in postgres vector_restore; do
+            docker exec "$PG_CONTAINER" psql -Xq -v ON_ERROR_STOP=1 -U postgres -d "$db" -c "$query" > "$RUNNER_TEMP/$db.rows"
+          done
+          test -s "$RUNNER_TEMP/postgres.rows"
+          cmp "$RUNNER_TEMP/postgres.rows" "$RUNNER_TEMP/vector_restore.rows"
       - if: failure()
         run: docker compose logs chromadb
